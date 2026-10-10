@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   Brain,
+  Check,
   ChevronRight,
   CircleDot,
   MessageSquare,
@@ -21,10 +22,12 @@ import { cn } from "@/lib/utils";
 const STEP_POLL_MS = 1500;
 const RUNS_POLL_MS = 3000;
 
-/** Live transcript of what the agent does on this task, with a picker for past runs. */
+/** Live transcript of what the agent does on this task, one "cycle" per run. */
 export function AgentActivity({ taskId }: { taskId: string }) {
   const [runs, setRuns] = useState<RunRecord[] | null>(null);
   const [picked, setPicked] = useState<string | null>(null);
+  const [now, setNow] = useState<number>(() => Date.now());
+  const [copied, setCopied] = useState<boolean>(false);
 
   // Runs of this task (to find the active one and offer past runs).
   useEffect(() => {
@@ -41,49 +44,242 @@ export function AgentActivity({ taskId }: { taskId: string }) {
     };
   }, [taskId]);
 
+  // Deep link: /tasks/<id>?run=<runId> selects that cycle.
+  useEffect(() => {
+    try {
+      const fromUrl = new URLSearchParams(window.location.search).get("run");
+      if (fromUrl) setPicked(fromUrl);
+    } catch {
+      // ignore malformed URLs
+    }
+  }, [taskId]);
+
+  const anyRunning = Boolean(runs?.some((r) => r.status === "running"));
+  useEffect(() => {
+    if (!anyRunning) return;
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [anyRunning]);
+
+  const fallback: RunRecord | null = useMemo(() => {
+    if (!runs || !runs.length) return null;
+    const running = [...runs].reverse().find((r) => r.status === "running");
+    return running ?? runs[runs.length - 1];
+  }, [runs]);
+  const shown: RunRecord | null = (runs ?? []).find((r) => r.id === picked) ?? fallback;
+  const shownId: string | null = shown ? shown.id : null;
+
+  // Keep ?run= in sync with the selected cycle, preserving any other params.
+  useEffect(() => {
+    if (runs === null || !shownId) return;
+    try {
+      const url = new URL(window.location.href);
+      if (url.searchParams.get("run") === shownId) return;
+      url.searchParams.set("run", shownId);
+      window.history.replaceState(window.history.state, "", url.toString());
+    } catch {
+      // ignore
+    }
+  }, [runs, shownId]);
+
   if (runs === null) return null;
 
-  const latest = runs.length ? runs[runs.length - 1] : null;
-  const shown = runs.find((r) => r.id === picked) ?? latest;
   const live = shown?.status === "running";
+
+  const copyLink = async () => {
+    try {
+      await navigator.clipboard.writeText(window.location.href);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      setCopied(false);
+    }
+  };
 
   return (
     <section className="mt-8">
       <div className="mb-3 flex items-center gap-2">
         <h2 className="text-[13px] font-medium text-foreground">Agent activity</h2>
+        {runs.length ? (
+          <span className="text-[11px] text-muted-foreground">
+            {runs.length} {runs.length === 1 ? "cycle" : "cycles"}
+          </span>
+        ) : null}
         {live ? (
           <span className="inline-flex items-center gap-1.5 text-[11px] text-[#5E6AD2]">
             <span className="relative flex size-1.5">
-              <span className="absolute inline-flex size-full animate-ping rounded-full bg-[#5E6AD2]/60" />
+              <span className="absolute inline-flex size-full rounded-full bg-[#5E6AD2]/60 motion-safe:animate-ping" />
               <span className="relative inline-flex size-1.5 rounded-full bg-[#5E6AD2]" />
             </span>
             live
           </span>
         ) : null}
-        {runs.length > 1 ? (
-          <select
-            className="ml-auto rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground"
-            value={shown?.id ?? ""}
-            onChange={(e) => setPicked(e.target.value || null)}
-            aria-label="Run"
-          >
-            {[...runs].reverse().map((run) => (
-              <option key={run.id} value={run.id}>
-                Attempt {run.attempt} · {run.status} · {run.agent.id}
-              </option>
-            ))}
-          </select>
-        ) : null}
       </div>
       {shown ? (
-        // Keyed by run: a new run (or another pick) starts a fresh transcript.
-        <RunTranscript key={shown.id} runId={shown.id} status={shown.status} />
+        <>
+          <ol className="mb-4 flex flex-col overflow-hidden rounded-xl border border-border bg-background">
+            {[...runs].reverse().map((run) => (
+              <li key={run.id} className="border-b border-border/70 last:border-b-0">
+                <CycleRow
+                  run={run}
+                  selected={run.id === shownId}
+                  now={now}
+                  onSelect={() => setPicked(run.id)}
+                />
+              </li>
+            ))}
+          </ol>
+          <div className="mb-2 flex items-center gap-2">
+            <StatusDot status={shown.status} />
+            <h3 className="text-[12px] font-medium text-foreground">
+              Cycle {shown.attempt} transcript
+            </h3>
+            <span className="text-[11px] text-muted-foreground">{statusText(shown.status)}</span>
+            <button
+              type="button"
+              onClick={() => void copyLink()}
+              className="ml-auto inline-flex items-center gap-1 rounded-md border border-border bg-background px-2 py-0.5 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground"
+              title="Copy a link to this cycle"
+            >
+              {copied ? <Check className="size-3" strokeWidth={2} /> : null}
+              {copied ? "Copied" : "Copy link"}
+            </button>
+          </div>
+          {/* Keyed by run: a new run (or another pick) starts a fresh transcript. */}
+          <RunTranscript key={shown.id} runId={shown.id} status={shown.status} />
+        </>
       ) : (
         <p className="text-[13px] text-muted-foreground">
           No agent has worked on this task yet. Start one above, or start the engine.
         </p>
       )}
     </section>
+  );
+}
+
+function statusText(status: RunRecord["status"]): string {
+  switch (status) {
+    case "running":
+      return "Running";
+    case "succeeded":
+      return "Succeeded";
+    case "failed":
+      return "Failed";
+    case "lost":
+      return "Lost";
+    case "stopped":
+      return "Stopped";
+    default:
+      return String(status);
+  }
+}
+
+function StatusDot({ status }: { status: RunRecord["status"] }) {
+  if (status === "running") {
+    return (
+      <span className="relative flex size-2 shrink-0">
+        <span className="absolute inline-flex size-full rounded-full bg-[#5E6AD2]/60 motion-safe:animate-ping" />
+        <span className="relative inline-flex size-2 rounded-full bg-[#5E6AD2]" />
+      </span>
+    );
+  }
+  const color: string =
+    status === "succeeded"
+      ? "bg-emerald-500"
+      : status === "failed" || status === "lost"
+        ? "bg-red-500"
+        : "bg-zinc-400";
+  return <span className={cn("inline-flex size-2 shrink-0 rounded-full", color)} />;
+}
+
+function duration(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return "";
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ${s % 60}s`;
+  const h = Math.floor(m / 60);
+  return `${h}h ${m % 60}m`;
+}
+
+function startLabel(at: string): string {
+  const d = new Date(at);
+  if (Number.isNaN(d.getTime())) return at;
+  return d.toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function clip(text: string, max: number): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > max ? `${flat.slice(0, max)}…` : flat;
+}
+
+function CycleRow({
+  run,
+  selected,
+  now,
+  onSelect,
+}: {
+  run: RunRecord;
+  selected: boolean;
+  now: number;
+  onSelect: () => void;
+}) {
+  const started: number = new Date(run.startedAt).getTime();
+  const ended: number | null = run.endedAt ? new Date(run.endedAt).getTime() : null;
+  const running = run.status === "running";
+  const span: string = Number.isNaN(started)
+    ? ""
+    : running
+      ? `running for ${duration(now - started)}`
+      : ended !== null && !Number.isNaN(ended)
+        ? duration(ended - started)
+        : "";
+  const instructions: string = run.instructions ? clip(run.instructions, 160) : "";
+  const note: string = run.note ? clip(run.note, 200) : "";
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      aria-current={selected ? "true" : undefined}
+      className={cn(
+        "flex w-full flex-col gap-1 px-3.5 py-2.5 text-left transition-colors",
+        selected ? "bg-[#5E6AD2]/[0.07] shadow-[inset_2px_0_0_#5E6AD2]" : "hover:bg-accent/60",
+      )}
+    >
+      <span className="flex w-full items-center gap-2 text-[13px]">
+        <StatusDot status={run.status} />
+        <span className={cn("font-medium", selected ? "text-[#5E6AD2]" : "text-foreground")}>
+          Cycle {run.attempt}
+        </span>
+        <span className="text-[11px] text-muted-foreground">{statusText(run.status)}</span>
+        <span className="min-w-0 truncate font-mono text-[11px] text-muted-foreground">
+          {run.agent.id}
+        </span>
+        <span className="ml-auto shrink-0 pl-2 text-[11px] text-muted-foreground tabular-nums">
+          {startLabel(run.startedAt)}
+          {span ? ` · ${span}` : ""}
+        </span>
+      </span>
+      {instructions ? (
+        <span className="pl-4 text-xs text-muted-foreground">
+          <span className="font-medium text-foreground/80">
+            {run.attempt > 1 ? "Sent back: " : "Instructions: "}
+          </span>
+          {instructions}
+        </span>
+      ) : null}
+      {note ? (
+        <span className="pl-4 text-xs text-muted-foreground">
+          <span className="font-medium text-foreground/80">Summary: </span>
+          {note}
+        </span>
+      ) : null}
+    </button>
   );
 }
 
