@@ -10,6 +10,7 @@ import { BugReportButton } from "@/components/layout/bug-report-button";
 import { AgentDrawer } from "@/components/agent/agent-drawer";
 import { MultiplayerProvider } from "@/components/multiplayer/provider";
 import "./globals.css";
+import { ProjectUrlSync } from "@/components/layout/project-url-sync";
 
 const inter = Inter({
   variable: "--font-inter",
@@ -33,6 +34,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       className={`${inter.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body className="min-h-full font-sans">
+        <ProjectUrlSync />
         <TooltipProvider>
           <MultiplayerProvider>
           <AgentDrawerProvider>

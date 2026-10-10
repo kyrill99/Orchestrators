@@ -23,7 +23,8 @@ comments and what the previous attempt did.
 
 Env: GEMINI_WORKER_MODEL (gemini-3.8-flash), GEMINI_WORKER_MAX_STEPS (40),
      GEMINI_WORKER_MAX_SECONDS (1200),
-     GEMINI_WORKER_BUILTIN_TOOLS (google_search,code_execution; "" for none).
+     GEMINI_WORKER_BUILTIN_TOOLS (google_search,url_context,code_execution; "" for none;
+     url_context is dropped automatically if the API rejects it).
 """
 
 from __future__ import annotations
@@ -62,7 +63,9 @@ results, open questions, next steps. It is how you, a later attempt and the huma
 up the work. Put substantial results there or in the task description, not only in chat.
 - Post short progress notes with add_comment when you reach a milestone, and set \
 progress with update_my_task.
-- You have no shell and no file system. Use google_search for facts you are unsure of \
+- You have no shell and no file system, but you have the web: use google_search to find \
+pages and url_context to open and read any URL (docs, a GitHub repo, an article). \
+Use google_search for facts you are unsure of \
 and code_execution for calculations. save_artifact stores files on your task.
 - Split off follow-up work you will not do now with create_subtask.
 - Only ask a human (request_decision) about strategy: goals, priorities, success \
@@ -175,7 +178,9 @@ class GeminiRunner:
             max_seconds if max_seconds is not None else _env_int("GEMINI_WORKER_MAX_SECONDS", 1200)
         )
         if builtin_tools is None:
-            raw = os.environ.get("GEMINI_WORKER_BUILTIN_TOOLS", "google_search,code_execution")
+            raw = os.environ.get(
+                "GEMINI_WORKER_BUILTIN_TOOLS", "google_search,url_context,code_execution"
+            )
             builtin_tools = [t.strip() for t in raw.split(",") if t.strip()]
         self.builtin_tools = builtin_tools
         self.retry_delays = retry_delays
@@ -348,6 +353,14 @@ class _Loop:
             try:
                 return client.interactions.create(**kwargs)
             except Exception as e:  # noqa: BLE001 - the SDK raises many types
+                tools = kwargs.get("tools") or []
+                if any(t.get("type") == "url_context" for t in tools if isinstance(t, dict)) \
+                        and ("url_context" in str(e) or "400" in str(e) or "INVALID_ARGUMENT" in str(e)):
+                    # Web page reading not accepted with this tool mix: keep going without it.
+                    kwargs["tools"] = [t for t in tools if not (isinstance(t, dict) and t.get("type") == "url_context")]
+                    self.r.builtin_tools = [t for t in self.r.builtin_tools if t != "url_context"]
+                    self.log("error", {"message": f"url_context rejected, continuing without it: {e}"})
+                    continue
                 if not delays or self.cancelled():
                     self.log("error", {"message": f"Gemini request failed: {e}"})
                     if not self.cancelled():
