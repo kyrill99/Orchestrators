@@ -1,0 +1,104 @@
+{
+  "schema_version": "1",
+  "project_id": "plant-watering",
+  "owner_id": "lorenz",
+  "revision": 7,
+  "goal": {
+    "value": "Water my balcony plants automatically while I'm away",
+    "source": "stated",
+    "confidence": 0.95,
+    "evidence": "water my plants when I'm on holiday",
+    "turn": 1
+  },
+  "project_type": {
+    "value": "hobby",
+    "source": "confirmed",
+    "confidence": 0.95,
+    "evidence": "Yep, just for fun",
+    "turn": 2
+  },
+  "success_criteria": {
+    "value": [
+      "Plants survive a two-week holiday"
+    ],
+    "source": "stated",
+    "confidence": 0.9,
+    "evidence": "they should survive two weeks",
+    "turn": 3
+  },
+  "lifespan": {
+    "value": "months",
+    "source": "confirmed",
+    "confidence": 0.95,
+    "evidence": "a few months is fine",
+    "turn": 6
+  },
+  "audience": {
+    "value": "Just me",
+    "source": "inferred",
+    "confidence": 0.8,
+    "evidence": "my plants",
+    "turn": 5
+  },
+  "constraints": {
+    "value": [
+      "Runs on the Raspberry Pi I already own"
+    ],
+    "source": "stated",
+    "confidence": 0.9,
+    "evidence": "I have a Pi lying around",
+    "turn": 4
+  },
+  "non_goals": {
+    "value": null,
+    "source": null,
+    "confidence": 0.0,
+    "evidence": null,
+    "turn": null
+  },
+  "tradeoffs": {
+    "speed_vs_quality": {
+      "value": -1,
+      "source": "default",
+      "confidence": 0.5,
+      "evidence": "default for hobby",
+      "turn": 2
+    },
+    "explore_vs_focus": {
+      "value": -1,
+      "source": "default",
+      "confidence": 0.5,
+      "evidence": "default for hobby",
+      "turn": 2
+    },
+    "simplicity_vs_extensibility": {
+      "value": -1,
+      "source": "default",
+      "confidence": 0.5,
+      "evidence": "default for hobby",
+      "turn": 2
+    },
+    "caution_vs_boldness": {
+      "value": 1,
+      "source": "default",
+      "confidence": 0.5,
+      "evidence": "default for hobby",
+      "turn": 2
+    }
+  },
+  "open_gaps": [
+    "tradeoffs.speed_vs_quality",
+    "tradeoffs.explore_vs_focus",
+    "tradeoffs.simplicity_vs_extensibility",
+    "tradeoffs.caution_vs_boldness",
+    "non_goals"
+  ],
+  "updated_at": "2026-10-10T12:02:25.226479Z",
+  "policies": {
+    "testing": "Smoke test of the main path",
+    "documentation": "README with how to run it",
+    "approaches_before_committing": 1,
+    "dependencies": "Popular and pleasant to use",
+    "ask_owner_when": "The goal itself would change"
+  }
+}

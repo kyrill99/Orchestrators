@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "strategy-interview"
+version = "0.1.0"
+description = "Objective interview and strategy picture: agents decide details, the owner only talks strategy."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2.7",
+    "google-genai>=1.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+include = ["strategy_interview*"]
+
+[tool.setuptools.package-data]
+strategy_interview = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,103 @@
+{
+  "schema_version": "1",
+  "project_id": "chunker-eval",
+  "owner_id": "lorenz",
+  "revision": 7,
+  "goal": {
+    "value": "Find out whether our chunking algorithm beats the current one",
+    "source": "stated",
+    "confidence": 0.95,
+    "evidence": "I want to evaluate our chunking algorithm",
+    "turn": 1
+  },
+  "project_type": {
+    "value": "research",
+    "source": "confirmed",
+    "confidence": 0.95,
+    "evidence": "Yes, it's research",
+    "turn": 2
+  },
+  "success_criteria": {
+    "value": [
+      "Beats the baseline on retrieval recall",
+      "Results are reproducible"
+    ],
+    "source": "stated",
+    "confidence": 0.9,
+    "evidence": "success is beating the baseline on recall",
+    "turn": 3
+  },
+  "lifespan": {
+    "value": "months",
+    "source": "confirmed",
+    "confidence": 0.95,
+    "evidence": "Yes, a few months",
+    "turn": 6
+  },
+  "audience": {
+    "value": null,
+    "source": null,
+    "confidence": 0.0,
+    "evidence": null,
+    "turn": null
+  },
+  "constraints": {
+    "value": [],
+    "source": "stated",
+    "confidence": 0.9,
+    "evidence": "no deadline",
+    "turn": 5
+  },
+  "non_goals": {
+    "value": null,
+    "source": null,
+    "confidence": 0.0,
+    "evidence": null,
+    "turn": null
+  },
+  "tradeoffs": {
+    "speed_vs_quality": {
+      "value": 2,
+      "source": "stated",
+      "confidence": 0.9,
+      "evidence": "it has to be rigorous",
+      "turn": 4
+    },
+    "explore_vs_focus": {
+      "value": -2,
+      "source": "default",
+      "confidence": 0.5,
+      "evidence": "default for research",
+      "turn": 2
+    },
+    "simplicity_vs_extensibility": {
+      "value": -1,
+      "source": "default",
+      "confidence": 0.5,
+      "evidence": "default for research",
+      "turn": 2
+    },
+    "caution_vs_boldness": {
+      "value": 0,
+      "source": "default",
+      "confidence": 0.5,
+      "evidence": "default for research",
+      "turn": 2
+    }
+  },
+  "open_gaps": [
+    "audience",
+    "tradeoffs.explore_vs_focus",
+    "tradeoffs.simplicity_vs_extensibility",
+    "tradeoffs.caution_vs_boldness",
+    "non_goals"
+  ],
+  "updated_at": "2026-10-10T12:02:25.226242Z",
+  "policies": {
+    "testing": "Tests on evaluation and metric code, fixed seeds",
+    "documentation": "Experiment log: config, result, conclusion",
+    "approaches_before_committing": 3,
+    "dependencies": "Pinned versions for reproducibility",
+    "ask_owner_when": "Results contradict the hypothesis or change direction"
+  }
+}
