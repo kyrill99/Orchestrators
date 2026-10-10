@@ -474,6 +474,15 @@ function Welcome({
   );
 }
 
+/** Tool lines are stored as `name({args})`, plus ` → error` when the call failed. */
+function toolName(call: string): string {
+  return call.split("(", 1)[0];
+}
+
+function toolFailed(call: string): boolean {
+  return call.includes(" \u2192 ");
+}
+
 /** Show the author above the first of a run of messages from one person. */
 function authorLabel(
   message: ConversationMessage,
@@ -562,7 +571,8 @@ function Interview({
                   className="max-w-full self-start truncate font-mono text-[11px] text-muted-foreground"
                   title={message.content}
                 >
-                  ↳ {message.content}
+                  ↳ {toolName(message.content)}
+                  {toolFailed(message.content) && " · failed"}
                 </p>
               );
             }
