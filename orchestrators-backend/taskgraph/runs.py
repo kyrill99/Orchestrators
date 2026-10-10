@@ -15,8 +15,13 @@ subprocess run belongs to the process that launched it; another process on the
 same host can still stop it by pid. If the launching process went away and the
 pid is gone, `reconcile` marks the run 'lost' (exit code unknown).
 
+- `GeminiRunner` ("gemini", services/gemini_worker.py) runs a Gemini agent
+  in a background thread of this process; it is the default when
+  GEMINI_API_KEY is set. A run whose process died (e.g. the backend
+  restarted) is marked 'lost' with the runner's `lost_note`.
+
 Env (see `runner_from_env`):
-  TASKGRAPH_RUNNER      record (default) | subprocess
+  TASKGRAPH_RUNNER      gemini (default with GEMINI_API_KEY) | record | subprocess
   TASKGRAPH_RUNNER_CMD  command for subprocess runs; {run_id}, {task_id},
                         {agent_id} are filled in. The prompt goes to stdin.
   TASKGRAPH_RUN_LOGS    log directory (default: <dir of TASKGRAPH_PATH>/runs)
@@ -312,19 +317,29 @@ class RunManager:
             if run.runner != self.runner.name or (owns and owns(run)):
                 continue
             if self.runner.is_alive(run) is False:
+                note = getattr(
+                    self.runner, "lost_note",
+                    "process ended while no server was watching; exit code unknown",
+                )
                 lost.append(
-                    self.service.end_run(
-                        Actor(type="agent", id="runner"), run.id, "lost",
-                        note="process ended while no server was watching; exit code unknown",
-                    )
+                    self.service.end_run(Actor(type="agent", id="runner"), run.id, "lost", note=note)
                 )
         return lost
 
 
-def runner_from_env() -> Runner:
-    kind = os.environ.get("TASKGRAPH_RUNNER", "record")
+def runner_from_env(gemini: Callable[[], Runner] | None = None) -> Runner:
+    """The runner named by TASKGRAPH_RUNNER. Unset: 'gemini' when GEMINI_API_KEY
+    is set and a `gemini` factory is given (see services/gemini_worker.py),
+    otherwise 'record'."""
+    kind = os.environ.get("TASKGRAPH_RUNNER", "").strip()
+    if not kind:
+        kind = "gemini" if gemini is not None and os.environ.get("GEMINI_API_KEY", "").strip() else "record"
     if kind == "record":
         return RecordRunner()
+    if kind == "gemini":
+        if gemini is None:
+            raise SystemExit("TASKGRAPH_RUNNER=gemini is only available in the API and MCP server processes")
+        return gemini()
     if kind == "subprocess":
         cmd = os.environ.get("TASKGRAPH_RUNNER_CMD", "").strip()
         if not cmd:
@@ -332,4 +347,4 @@ def runner_from_env() -> Runner:
         graph_path = Path(os.environ.get("TASKGRAPH_PATH", "data/taskgraph.jsonl"))
         log_dir = os.environ.get("TASKGRAPH_RUN_LOGS", str(graph_path.parent / "runs"))
         return SubprocessRunner(cmd, log_dir=log_dir)
-    raise SystemExit(f"unknown TASKGRAPH_RUNNER '{kind}' (record | subprocess)")
+    raise SystemExit(f"unknown TASKGRAPH_RUNNER '{kind}' (gemini | record | subprocess)")
