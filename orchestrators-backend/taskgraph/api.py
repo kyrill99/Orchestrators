@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from .models import Actor, Autonomy, Model, Op
+from .loop import auto_start, decide, review_task
 from .runs import RunManager, runner_from_env
 from .service import TaskGraphError, TaskGraphService
 
@@ -41,6 +42,18 @@ class RunBody(Model):
 class StopBody(Model):
     actor: Actor
     reason: str | None = None
+
+
+class TaskReviewBody(Model):
+    actor: Actor
+    approve: bool
+    note: str | None = None
+
+
+class DecideBody(Model):
+    actor: Actor
+    chosen: str
+    rationale: str
 
 
 class SettingsBody(Model):
@@ -119,6 +132,22 @@ def build_router(service: TaskGraphService, runs: RunManager | None = None) -> A
         """Stop the active run (if any) and start the next attempt."""
         return call(manager.restart, body.actor, task_id, body.reason,
                     agent_id=body.agent_id, instructions=body.instructions)
+
+    @r.post("/tasks/{task_id}/review")
+    def review_finished_task(task_id: str, body: TaskReviewBody):
+        """Owner approves an in-review task (-> closed, next tasks start) or sends it
+        back (-> worker restarts with the note as feedback)."""
+        return call(review_task, service, manager, body.actor, task_id, body.approve, body.note)
+
+    @r.post("/tasks/{task_id}/decide")
+    def decide_task(task_id: str, body: DecideBody):
+        """Owner answers the task's pending decision; tasks it unblocks start."""
+        return call(decide, service, manager, body.actor, task_id, body.chosen, body.rationale)
+
+    @r.post("/autostart")
+    def autostart(body: StopBody):
+        """Start workers on every ready task now."""
+        return {"started": call(auto_start, service, manager, body.actor)}
 
     @r.post("/changes")
     def submit(body: SubmitBody):

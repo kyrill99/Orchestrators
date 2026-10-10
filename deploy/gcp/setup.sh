@@ -157,6 +157,8 @@ After=network.target
 [Service]
 User=${APP_USER}
 WorkingDirectory=${APP_DIR}/orchestrators-backend
+Environment=TASKGRAPH_RUNNER=subprocess
+Environment="TASKGRAPH_RUNNER_CMD=${APP_DIR}/orchestrators-backend/.venv/bin/python -m taskgraph.worker"
 ExecStart=${APP_DIR}/orchestrators-backend/.venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000
 Restart=always
 [Install]

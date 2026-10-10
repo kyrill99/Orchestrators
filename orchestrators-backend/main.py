@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from typing import Literal
 
 from dotenv import load_dotenv
@@ -34,6 +35,11 @@ from userstate import UserStateStore
 from userstate import build_router as build_userstate_router
 
 load_dotenv()
+
+# Agent runs execute the Gemini worker (taskgraph/worker.py) unless configured
+# otherwise; set TASKGRAPH_RUNNER=record to only track runs.
+os.environ.setdefault("TASKGRAPH_RUNNER", "subprocess")
+os.environ.setdefault("TASKGRAPH_RUNNER_CMD", f"{sys.executable} -m taskgraph.worker")
 
 MODEL = "gemini-3.8-flash"
 
