@@ -168,9 +168,8 @@ export function TimelineView() {
     return () => observer.disconnect();
   }, [ordered.length]);
 
-  const outerPad = 48; // p-4 / sm:p-6 approx; use min of measured
   const available =
-    viewportWidth > 0 ? Math.max(viewportWidth - outerPad - CHART_PAD_X * 2, 320) : 0;
+    viewportWidth > 0 ? Math.max(viewportWidth - CHART_PAD_X * 2, 320) : 0;
 
   const dayWidth = Math.max(
     MIN_DAY_WIDTH,
@@ -231,9 +230,9 @@ export function TimelineView() {
 
   return (
     <div ref={scrollerRef} className="h-full w-full overflow-auto bg-canvas">
-      <div className="box-border min-h-full w-full min-w-full p-4 sm:p-6">
+      <div className="box-border min-h-full w-full min-w-full">
         <div
-          className="relative w-full rounded-xl border border-border bg-background shadow-[0_1px_2px_rgba(0,0,0,0.04)]"
+          className="relative w-full bg-background"
           style={{ minWidth: contentWidth + CHART_PAD_X * 2 }}
         >
           <div
