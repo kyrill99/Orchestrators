@@ -4,7 +4,13 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { ArrowLeft, Ban, Bot, User, Activity } from "lucide-react";
 import type { Task, TaskActivity } from "@/lib/fixtures";
+import {
+  loadAssignee,
+  saveAssignee,
+  type AssigneeId,
+} from "@/lib/assignees";
 import { fetchTask } from "@/lib/taskgraph-api";
+import { AssigneePicker } from "@/components/task/assignee-picker";
 import { RunControl } from "@/components/task/run-control";
 import { StatusBadge } from "@/components/task/status-badge";
 import { Button } from "@/components/ui/button";
@@ -18,6 +24,11 @@ export function TaskIssuePage({ id }: { id: string }) {
   const [blockers, setBlockers] = useState<Task[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [assignee, setAssignee] = useState<AssigneeId>("unassigned");
+
+  useEffect(() => {
+    setAssignee(loadAssignee(id));
+  }, [id]);
 
   useEffect(() => {
     let cancelled = false;
@@ -52,6 +63,11 @@ export function TaskIssuePage({ id }: { id: string }) {
       cancelled = true;
     };
   }, [id]);
+
+  function onAssigneeChange(next: AssigneeId) {
+    setAssignee(next);
+    saveAssignee(id, next);
+  }
 
   if (loading) {
     return (
@@ -128,6 +144,18 @@ export function TaskIssuePage({ id }: { id: string }) {
             </p>
           ) : null}
 
+          <section className="mt-6 max-w-xs lg:hidden">
+            <h2 className="mb-1.5 text-[11px] font-medium text-muted-foreground">
+              Properties
+            </h2>
+            <div className="flex flex-col gap-0.5">
+              <div className="flex items-center gap-2 rounded-md px-1.5 py-1.5 text-[13px]">
+                <StatusBadge status={task.status} />
+              </div>
+              <AssigneePicker value={assignee} onChange={onAssigneeChange} />
+            </div>
+          </section>
+
           <section className="mt-8">
             <h2 className="mb-3 text-[13px] font-medium text-foreground">
               Activity
@@ -178,38 +206,53 @@ export function TaskIssuePage({ id }: { id: string }) {
       </div>
 
       <aside className="hidden w-[280px] shrink-0 overflow-auto border-l border-border p-4 lg:block">
-        <h2 className="mb-3 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
-          Relations
-        </h2>
-        {blockers.length === 0 && related.length === 0 ? (
-          <p className="text-xs text-muted-foreground">None</p>
-        ) : (
-          <ul className="flex flex-col gap-2">
-            {blockers.map((item) => (
-              <li key={item.id}>
-                <Link
-                  href={`/tasks/${item.id}`}
-                  className="flex items-center gap-2 rounded-md px-2 py-1.5 text-[13px] hover:bg-accent/60"
-                >
-                  <Ban className="size-3.5 text-muted-foreground" />
-                  <span className="truncate">{item.title}</span>
-                </Link>
-              </li>
-            ))}
-            {related.map((item) => (
-              <li key={item.id}>
-                <Link
-                  href={`/tasks/${item.id}`}
-                  className="flex items-center gap-2 rounded-md px-2 py-1.5 text-[13px] hover:bg-accent/60"
-                >
-                  <User className="size-3.5 text-muted-foreground" />
-                  <span className="truncate">{item.title}</span>
-                </Link>
-              </li>
-            ))}
-          </ul>
-        )}
-        <div className="mt-6 flex items-center gap-2 text-xs text-muted-foreground">
+        <section>
+          <h2 className="mb-1.5 px-1.5 text-[11px] font-medium text-muted-foreground">
+            Properties
+          </h2>
+          <div className="flex flex-col gap-0.5">
+            <div className="flex items-center gap-2 rounded-md px-1.5 py-1.5 text-[13px]">
+              <StatusBadge status={task.status} />
+            </div>
+            <AssigneePicker value={assignee} onChange={onAssigneeChange} />
+          </div>
+        </section>
+
+        <section className="mt-6">
+          <h2 className="mb-3 px-1.5 text-[11px] font-medium text-muted-foreground">
+            Relations
+          </h2>
+          {blockers.length === 0 && related.length === 0 ? (
+            <p className="px-1.5 text-xs text-muted-foreground">None</p>
+          ) : (
+            <ul className="flex flex-col gap-2">
+              {blockers.map((item) => (
+                <li key={item.id}>
+                  <Link
+                    href={`/tasks/${item.id}`}
+                    className="flex items-center gap-2 rounded-md px-2 py-1.5 text-[13px] hover:bg-accent/60"
+                  >
+                    <Ban className="size-3.5 text-muted-foreground" />
+                    <span className="truncate">{item.title}</span>
+                  </Link>
+                </li>
+              ))}
+              {related.map((item) => (
+                <li key={item.id}>
+                  <Link
+                    href={`/tasks/${item.id}`}
+                    className="flex items-center gap-2 rounded-md px-2 py-1.5 text-[13px] hover:bg-accent/60"
+                  >
+                    <User className="size-3.5 text-muted-foreground" />
+                    <span className="truncate">{item.title}</span>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+
+        <div className="mt-6 flex items-center gap-2 px-1.5 text-xs text-muted-foreground">
           <Bot className="size-3.5" />
           Agent-managed task
         </div>
