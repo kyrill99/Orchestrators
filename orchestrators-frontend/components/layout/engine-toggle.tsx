@@ -10,6 +10,9 @@ import {
   type EngineWaiting,
 } from "@/lib/api";
 import { Button } from "@/components/ui/button";
+import { DecisionIcon } from "@/components/task/decision-icon";
+import { projectPath } from "@/lib/project-scope";
+import { useProjectId } from "@/lib/use-project";
 import { cn } from "@/lib/utils";
 
 const POLL_MS = 3000;
@@ -20,7 +23,15 @@ function waitingLabel(w: EngineWaiting): string | null {
     case "review":
       return `Waiting for review (${w.review.length})`;
     case "decision":
-      return `Waiting for decision (${w.decisions.length})`;
+      return `Waiting for decision (${w.decisions.filter((d) => !d.auto).length})`;
+    case "decision-auto":
+      return "Agent is about to decide";
+    case "preparing-decision":
+      return "Preparing a decision";
+    case "retrying":
+      return `Retrying (${w.retrying?.length ?? 0})`;
+    case "decision-changed":
+      return "Redoing after a decision change";
     case "proposal":
       return `Changes to approve (${w.proposals.length})`;
     case "assigned-to-person":
@@ -41,6 +52,7 @@ export function EngineToggle() {
   const [engine, setState] = useState<EngineStatus | null>(null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const projectId = useProjectId();
 
   const refresh = useCallback(() => {
     fetchEngine()
@@ -80,7 +92,9 @@ export function EngineToggle() {
   // Running but idle: say what it waits for, so it does not look broken.
   const hint =
     running && active === 0 && waiting ? waitingLabel(waiting) : null;
-  const focusHref = waiting?.focus ? `/tasks/${encodeURIComponent(waiting.focus.id)}` : null;
+  const focusHref = waiting?.focus
+    ? projectPath(projectId, `/tasks/${encodeURIComponent(waiting.focus.id)}`)
+    : null;
 
   const title = !canRun
     ? "No agent runner configured on the server (GEMINI_API_KEY is not set)"
@@ -92,8 +106,25 @@ export function EngineToggle() {
   const hintClass =
     "inline-flex max-w-44 min-w-0 items-center gap-1 overflow-hidden whitespace-nowrap rounded-md px-1.5 py-0.5 text-xs text-amber-700 dark:text-amber-400";
 
+  // Decisions that wait for the owner: always shown, running or not.
+  const yours = (waiting?.decisions ?? []).filter((d) => !d.auto);
+
   return (
     <div className="flex items-center gap-2" title={error ?? title}>
+      {yours.length > 0 ? (
+        <Link
+          href={
+            yours.length === 1
+              ? projectPath(projectId, `/tasks/${encodeURIComponent(yours[0].id)}`)
+              : projectPath(projectId, "/decisions")
+          }
+          title={yours.map((d) => `${d.title}: ${d.question}`).join("\n")}
+          className="inline-flex items-center gap-1 rounded-full bg-violet-500/10 px-2 py-0.5 text-xs font-medium text-violet-700 hover:bg-violet-500/15 dark:text-violet-300"
+        >
+          <DecisionIcon className="size-3 shrink-0" />
+          {yours.length === 1 ? "1 decision" : `${yours.length} decisions`}
+        </Link>
+      ) : null}
       {hint && waiting ? (
         focusHref ? (
           <Link

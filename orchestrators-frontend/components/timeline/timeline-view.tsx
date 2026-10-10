@@ -9,6 +9,7 @@ import { useTaskGraph } from "@/lib/use-task-graph";
 import { cn } from "@/lib/utils";
 import { AssigneeAvatar } from "@/components/task/assignee-picker";
 import { StatusIcon } from "@/components/task/status-icon";
+import { DecisionIcon } from "@/components/task/decision-icon";
 import { AvatarStack } from "@/components/presence/presence";
 import { presenceColor, useTaskPresence } from "@/lib/presence";
 import { projectPath } from "@/lib/project-scope";
@@ -533,8 +534,16 @@ export function TimelineView() {
                         status={task.status}
                         className="relative z-[1] size-3.5 shrink-0"
                       />
+                      {task.kind === "decision" ? (
+                        <DecisionIcon className="relative z-[1] size-3.5 shrink-0 text-violet-600 dark:text-violet-400" />
+                      ) : null}
                       <span className="relative z-[1] min-w-0 flex-1 whitespace-nowrap text-[13px] font-medium text-foreground">
                         {task.title}
+                        {task.kind === "decision" && task.decision?.state === "resolved" ? (
+                          <span className="ml-1.5 font-normal text-muted-foreground">
+                            → {task.decision.chosen}
+                          </span>
+                        ) : null}
                       </span>
                       <AvatarStack
                         people={here}

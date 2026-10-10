@@ -1,6 +1,7 @@
 import { apiBaseUrl, GUI_ACTOR, type Actor } from "@/lib/api";
 import { syncAssigneeFromBackend } from "@/lib/assignees";
 import { projectFetch } from "@/lib/project-scope";
+import type { TaskDecision } from "@/lib/decisions";
 import type { Task, TaskActivity, TaskEdge, TaskKind, TaskStatus } from "@/lib/fixtures";
 
 export type GraphProject = {
@@ -31,6 +32,7 @@ export type ApiTask = {
   }>;
   blocks?: string[];
   children?: string[];
+  decision?: TaskDecision | null;
 };
 
 /** Per-task agent run stats from GET /graph (`runStats`). */
@@ -102,6 +104,7 @@ export function mapApiTask(raw: ApiTask): Task {
     startDate: start,
     endDate: end,
     progress: raw.progress ?? 0,
+    decision: raw.decision ?? null,
   };
 }
 

@@ -1,3 +1,5 @@
+import type { TaskDecision } from "@/lib/decisions";
+
 export type TaskStatus = "open" | "running" | "in-review" | "closed";
 
 export type TaskKind = "start" | "task" | "decision" | "end";
@@ -33,6 +35,8 @@ export type Task = {
   endDate: string;
   /** 0–1 filled portion of the bar (completed work). */
   progress: number;
+  /** Decision tasks (and tasks whose worker asked a question): the decision. */
+  decision?: TaskDecision | null;
 };
 
 export type TaskEdge = {

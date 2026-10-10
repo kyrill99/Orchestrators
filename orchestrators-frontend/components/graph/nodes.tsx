@@ -2,10 +2,11 @@
 
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import { useEffect, useState } from "react";
-import { Bot, FileText, RotateCw } from "lucide-react";
+import { Bot, Check, FileText, RotateCw } from "lucide-react";
 import { getAssignee, type AssigneeId } from "@/lib/assignees";
 import { StatusBadge } from "@/components/task/status-badge";
 import { StatusIcon } from "@/components/task/status-icon";
+import { DecisionIcon } from "@/components/task/decision-icon";
 import { AssigneeAvatar } from "@/components/task/assignee-picker";
 import { AvatarStack } from "@/components/presence/presence";
 import { presenceColor, presenceName, useTaskPresence } from "@/lib/presence";
@@ -28,6 +29,13 @@ export type GraphNodeData = {
   tokens?: number;
   /** ISO start of the active agent run (live timer while running). */
   activeSince?: string;
+  /** Decision tasks: the decision's state and, once decided, the choice. */
+  decision?: {
+    state: "pending" | "resolved";
+    chosen?: string | null;
+    recommended?: string | null;
+    auto?: boolean;
+  } | null;
 };
 
 export type GraphNodeArtifact = {
@@ -354,9 +362,39 @@ export function TaskNode({ id, data, selected }: NodeProps) {
   );
 }
 
+/** What a decision node shows under the diamond: its state, or the choice. */
+function decisionCaption(data: GraphNodeData): {
+  text: string;
+  className: string;
+  title?: string;
+} {
+  const d = data.decision;
+  if (data.status === "running") {
+    return { text: "Preparing…", className: "text-[#5E6AD2]" };
+  }
+  if (d?.state === "resolved") {
+    return {
+      text: d.chosen ?? "Decided",
+      className: "text-emerald-700 dark:text-emerald-400",
+      title: `Decided: ${d.chosen}${d.auto ? " (by the agent, automatically)" : ""}`,
+    };
+  }
+  if (d?.state === "pending") {
+    return {
+      text: "Your choice",
+      className: "text-violet-700 dark:text-violet-300",
+      title: d.recommended ? `Recommended: ${d.recommended}` : undefined,
+    };
+  }
+  return { text: "Not prepared", className: "text-muted-foreground" };
+}
+
+/** Decision tasks: the flowchart diamond, with the state or the choice below it. */
 export function DecisionNode({ id, data, selected }: NodeProps) {
   const nodeData = data as GraphNodeData;
   const running = nodeData.status === "running";
+  const pending = nodeData.decision?.state === "pending" && !running;
+  const caption = decisionCaption(nodeData);
   return (
     <div className="group relative flex h-[112px] w-[220px] cursor-pointer items-center justify-center">
       <Handle type="target" position={Position.Top} className={HANDLE_CLASS} />
@@ -367,27 +405,43 @@ export function DecisionNode({ id, data, selected }: NodeProps) {
             "absolute size-[78px] rotate-45 rounded-[6px]",
             NODE_SURFACE,
             NODE_HOVER,
-            borderClass(selected, running),
+            pending ? "border-violet-500/50" : borderClass(selected, running),
             selected && NODE_SELECTED,
             running && NODE_RUNNING,
           )}
         />
-        <div className="relative flex max-w-[84px] flex-col items-center gap-1 text-center">
+        <div className="relative flex max-w-[84px] flex-col items-center gap-0.5 text-center">
+          <DecisionIcon
+            className={cn(
+              "size-3 shrink-0",
+              pending ? "text-violet-600 dark:text-violet-400" : "text-muted-foreground",
+            )}
+          />
           <p className="line-clamp-3 text-[11px] leading-[14px] font-medium tracking-[-0.005em] text-foreground">
             {nodeData.title}
           </p>
           <span className="inline-flex items-center gap-1">
             <StatusBadge status={nodeData.status} iconOnly />
-            {nodeData.assigneeId &&
-            nodeData.assigneeId !== "unassigned" ? (
-              <AssigneeAvatar
-                assignee={getAssignee(nodeData.assigneeId)}
-                className="size-4 text-[9px]"
-              />
+            {nodeData.artifacts && nodeData.artifacts.length > 0 ? (
+              <NodeArtifacts artifacts={nodeData.artifacts.slice(-1)} />
             ) : null}
           </span>
         </div>
+        {running ? <RunningPing /> : null}
       </div>
+      <span
+        title={caption.title}
+        className={cn(
+          "pointer-events-none absolute top-[104px] left-1/2 max-w-[200px] -translate-x-1/2 truncate rounded-full bg-background px-1.5 text-[10px] leading-4 font-medium",
+          caption.className,
+        )}
+      >
+        {nodeData.decision?.state === "resolved" ? (
+          <Check className="mr-0.5 inline size-2.5 align-[-1px]" strokeWidth={2.5} />
+        ) : null}
+        {caption.text}
+        {nodeData.decision?.state === "resolved" && nodeData.decision.auto ? " · auto" : ""}
+      </span>
       <Handle type="source" position={Position.Bottom} className={HANDLE_CLASS} />
     </div>
   );

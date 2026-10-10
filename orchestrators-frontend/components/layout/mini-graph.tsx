@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type SVGProps } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { apiBaseUrl, type AgentRun } from "@/lib/api";
@@ -9,7 +9,7 @@ import {
   projectFetch,
   projectPath,
 } from "@/lib/project-scope";
-import type { Task, TaskEdge, TaskStatus } from "@/lib/fixtures";
+import type { Task, TaskEdge, TaskKind, TaskStatus } from "@/lib/fixtures";
 import { layoutGraph, mapApiTask, type ApiTask } from "@/lib/taskgraph-api";
 import { cn } from "@/lib/utils";
 import {
@@ -26,6 +26,50 @@ const HEIGHT = 92;
 const PAD = 8;
 /** Accent used for agent activity elsewhere (graph node agent badge, Done). */
 const ACCENT = "#5E6AD2";
+/** Outline of a decision that waits for a choice (violet, as on the project graph). */
+const DECISION_PENDING = "#8b5cf6";
+
+type MiniTask = {
+  title: string;
+  status: TaskStatus;
+  kind: TaskKind;
+  /** Decision tasks: pending (waits for a choice) or resolved. */
+  decision?: "pending" | "resolved";
+};
+
+/**
+ * The marker for a node: circles for work tasks, diamonds for decisions (the
+ * flowchart symbol, as on the project graph) and small pills for start / end.
+ */
+type MarkerPaint = Pick<
+  SVGProps<SVGElement>,
+  "fill" | "stroke" | "strokeWidth" | "strokeOpacity" | "className" | "children"
+>;
+
+function Marker({
+  kind,
+  x,
+  y,
+  r,
+  ...props
+}: { kind: TaskKind; x: number; y: number; r: number } & MarkerPaint) {
+  if (kind === "decision") {
+    const d = r * 1.35;
+    return (
+      <polygon
+        points={`${x},${y - d} ${x + d},${y} ${x},${y + d} ${x - d},${y}`}
+        strokeLinejoin="round"
+        {...props}
+      />
+    );
+  }
+  if (kind === "start" || kind === "end") {
+    const w = r * 1.6;
+    const h = r * 1.2;
+    return <rect x={x - w} y={y - h} width={w * 2} height={h * 2} rx={h} {...props} />;
+  }
+  return <circle cx={x} cy={y} r={r} {...props} />;
+}
 
 /** Tasks and edges; a new object means the layout must be recomputed. */
 type Structure = { key: string; tasks: Task[]; edges: TaskEdge[] };
@@ -34,7 +78,7 @@ type MiniGraphState = {
   /** False when the backend could not be reached. */
   online: boolean;
   structure: Structure;
-  tasks: Map<string, { title: string; status: TaskStatus }>;
+  tasks: Map<string, MiniTask>;
   /** taskId -> agent id of the active run. */
   running: Map<string, string>;
 };
@@ -65,7 +109,15 @@ function toState(graph: BackendGraph | null, previous: MiniGraphState | null) {
         ? previous.structure
         : { key, tasks, edges },
     tasks: new Map(
-      tasks.map((t) => [t.id, { title: t.title, status: t.status }]),
+      tasks.map((t) => [
+        t.id,
+        {
+          title: t.title,
+          status: t.status,
+          kind: t.kind,
+          decision: t.decision?.state,
+        },
+      ]),
     ),
     running: new Map(
       (graph?.activeRuns ?? []).map((run) => [run.taskId, run.agent.id]),
@@ -309,9 +361,10 @@ export function MiniGraph() {
               }}
             >
               {selector ? (
-                <circle
-                  cx={p.x}
-                  cy={p.y}
+                <Marker
+                  kind={task.kind}
+                  x={p.x}
+                  y={p.y}
                   r={r + 2.25}
                   fill="none"
                   stroke={presenceColor(selector.email)}
@@ -320,12 +373,13 @@ export function MiniGraph() {
                   <title>{`${presenceName(selector)} ${
                     selector.selected ? "selected this" : `is editing ${selector.editing}`
                   }`}</title>
-                </circle>
+                </Marker>
               ) : null}
               {running ? (
-                <circle
-                  cx={p.x}
-                  cy={p.y}
+                <Marker
+                  kind={task.kind}
+                  x={p.x}
+                  y={p.y}
                   r={r + 1.5}
                   fill="none"
                   stroke={ACCENT}
@@ -333,13 +387,20 @@ export function MiniGraph() {
                   className="origin-center opacity-50 [transform-box:fill-box] motion-safe:animate-[mini-graph-ping_1.8s_cubic-bezier(0,0,0.2,1)_infinite]"
                 />
               ) : null}
-              <circle
-                cx={p.x}
-                cy={p.y}
+              <Marker
+                kind={task.kind}
+                x={p.x}
+                y={p.y}
                 r={hovered === id ? r + 0.75 : r}
                 fill={running ? ACCENT : style.fill}
-                stroke={running ? ACCENT : style.stroke}
-                strokeWidth={1}
+                stroke={
+                  running
+                    ? ACCENT
+                    : task.decision === "pending"
+                      ? DECISION_PENDING
+                      : style.stroke
+                }
+                strokeWidth={task.decision === "pending" ? 1.25 : 1}
                 className="transition-[r] duration-150"
               />
               {presence.others
@@ -374,7 +435,11 @@ export function MiniGraph() {
             top: 24 + hoveredPos.y - r - 6,
           }}
         >
-          {hoveredTask.title}
+          {hoveredTask.kind === "decision"
+            ? `Decision: ${hoveredTask.title}${
+                hoveredTask.decision === "pending" ? " (your choice)" : ""
+              }`
+            : hoveredTask.title}
         </div>
       ) : null}
     </div>

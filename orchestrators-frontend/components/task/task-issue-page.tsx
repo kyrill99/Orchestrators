@@ -12,6 +12,8 @@ import {
 import { fetchTask, setTaskStatus } from "@/lib/taskgraph-api";
 import { AssigneePicker } from "@/components/task/assignee-picker";
 import { OwnerActions } from "@/components/task/owner-actions";
+import { DecisionPanel } from "@/components/task/decision-panel";
+import { DecisionIcon } from "@/components/task/decision-icon";
 import { TaskEditor } from "@/components/task/task-editor";
 import { AgentActivity } from "@/components/task/agent-activity";
 import { RunControl } from "@/components/task/run-control";
@@ -202,7 +204,7 @@ export function TaskIssuePage({ id }: { id: string }) {
               {task.id}
             </span>
             <HereLine people={here} />
-            {task.kind === "task" ? (
+            {task.kind === "task" || task.kind === "decision" ? (
               <div className="ml-auto">
                 <RunControl
                   taskId={task.id}
@@ -227,6 +229,12 @@ export function TaskIssuePage({ id }: { id: string }) {
             />
           ) : (
             <div className="flex items-start gap-2">
+              {task.kind === "decision" ? (
+                <DecisionIcon
+                  className="mt-1 size-5 shrink-0 text-violet-600 dark:text-violet-400"
+                  aria-label="Decision task"
+                />
+              ) : null}
               <h1 className="text-xl font-semibold tracking-[-0.02em] text-foreground">
                 {task.title}
               </h1>
@@ -241,15 +249,40 @@ export function TaskIssuePage({ id }: { id: string }) {
             </div>
           )}
 
-          <div className="mt-4">
-            <OwnerActions taskId={task.id} />
-          </div>
-          <TaskArtifacts taskId={task.id} inReview={task.status === "in-review"} />
-          {task.description && !editing ? (
-            <p className="mt-3 whitespace-pre-wrap text-[13px] leading-relaxed text-muted-foreground">
-              {task.description}
-            </p>
-          ) : null}
+          {task.kind === "decision" ? (
+            <>
+              {task.description && !editing ? (
+                <p className="mt-3 whitespace-pre-wrap text-[13px] leading-relaxed text-muted-foreground">
+                  {task.description}
+                </p>
+              ) : null}
+              {/* The comparison report first, then the options it argues for. */}
+              <TaskArtifacts
+                taskId={task.id}
+                inReview={task.decision?.state === "pending"}
+              />
+              <div className="mt-4">
+                <DecisionPanel
+                  task={task}
+                  blockers={blockers}
+                  projectId={projectId}
+                  onChanged={() => setVersion((v) => v + 1)}
+                />
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="mt-4">
+                <OwnerActions taskId={task.id} />
+              </div>
+              <TaskArtifacts taskId={task.id} inReview={task.status === "in-review"} />
+              {task.description && !editing ? (
+                <p className="mt-3 whitespace-pre-wrap text-[13px] leading-relaxed text-muted-foreground">
+                  {task.description}
+                </p>
+              ) : null}
+            </>
+          )}
 
           <section className="mt-6 max-w-xs lg:hidden">
             <h2 className="mb-1.5 text-[11px] font-medium text-muted-foreground">
@@ -265,7 +298,7 @@ export function TaskIssuePage({ id }: { id: string }) {
             </div>
           </section>
 
-          {task.kind === "task" ? (
+          {task.kind === "task" || task.kind === "decision" ? (
             <>
               <AgentActivity taskId={task.id} />
               <ScratchpadPanel taskId={task.id} />
@@ -373,8 +406,17 @@ export function TaskIssuePage({ id }: { id: string }) {
         </section>
 
         <div className="mt-6 flex items-center gap-2 px-1.5 text-xs text-muted-foreground">
-          <Bot className="size-3.5" />
-          Agent-managed task
+          {task.kind === "decision" ? (
+            <>
+              <DecisionIcon className="size-3.5" />
+              Decision: prepared by an agent, chosen by you (or by the agent while the engine runs)
+            </>
+          ) : (
+            <>
+              <Bot className="size-3.5" />
+              Agent-managed task
+            </>
+          )}
         </div>
       </aside>
     </div>

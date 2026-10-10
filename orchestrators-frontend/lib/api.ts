@@ -338,7 +338,9 @@ export type EngineStatus = {
   runner: string;
   maxRuns: number;
   activeRuns: AgentRun[];
-  queue: { id: string; title: string }[];
+  queue: { id: string; title: string; kind?: string }[];
+  /** Seconds a prepared decision waits before the agent takes it (engine running). */
+  decisionAutoAfterSeconds?: number;
   /** Why the engine starts nothing (older backends omit it). */
   waiting?: EngineWaiting;
 };
@@ -348,9 +350,13 @@ export type EngineWaitingReason =
   | "run-limit"
   | "review"
   | "decision"
+  | "decision-auto"
+  | "preparing-decision"
   | "proposal"
   | "assigned-to-person"
+  | "retrying"
   | "needs-restart"
+  | "decision-changed"
   | "blocked";
 
 export type EngineWaiting = {
@@ -365,7 +371,33 @@ export type EngineWaiting = {
     kind: "review" | "decision" | "assigned" | "restart";
   } | null;
   review: { id: string; title: string }[];
-  decisions: { id: string; title: string; question: string }[];
+  /** Pending decisions; `auto`: the agent takes the recommendation (engine running). */
+  decisions: {
+    id: string;
+    title: string;
+    question: string;
+    recommended?: string | null;
+    auto?: boolean;
+    autoInSeconds?: number | null;
+    feedback?: boolean;
+  }[];
+  preparingDecisions?: { id: string; title: string }[];
+  decisionsToPrepare?: { id: string; title: string }[];
+  decisionChanges?: {
+    id: string;
+    title: string;
+    chosen: string;
+    previous: string;
+    redoing: string[];
+  }[];
+  retrying?: {
+    id: string;
+    title: string;
+    failureKind: string;
+    inSeconds: number;
+    retry: number;
+    maxRetries: number;
+  }[];
   proposals: { id: string; reason: string | null }[];
   blocked: {
     id: string;
@@ -374,7 +406,13 @@ export type EngineWaiting = {
   }[];
   /** Ready tasks the engine leaves alone because a person has them. */
   assignedToPeople: { id: string; title: string; assignee: string }[];
-  needsRestart: { id: string; title: string; lastRun: string }[];
+  needsRestart: {
+    id: string;
+    title: string;
+    lastRun: string;
+    failureKind?: string | null;
+    why?: string;
+  }[];
   autonomy: string;
   atRunLimit: boolean;
 };

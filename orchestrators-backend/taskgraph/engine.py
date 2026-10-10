@@ -566,9 +566,10 @@ class Engine:
                                            f"open to queue it again)"))
         if changes:
             c = changes[0]
+            n = len(c["redoing"])
+            redo = f"{n} tasks after it redo their work" if n != 1 else "the task after it redoes its work"
             parts.append(("decision-changed", f"Decision changed: {c['title']} is now '{c['chosen']}' "
-                                              f"(was '{c['previous']}'); {len(c['redoing'])} task"
-                                              f"{'s' * (len(c['redoing']) != 1)} after it redo their work"))
+                                              f"(was '{c['previous']}'); {redo}"))
         if not parts and blocked and not active and not queue and not prep:
             b = blocked[0]
             on = ", ".join(f"{w['title']} ({w['status']})" for w in b["blockedBy"])

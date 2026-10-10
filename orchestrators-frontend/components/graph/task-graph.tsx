@@ -128,6 +128,14 @@ export function TaskGraph() {
         cycles: runStats[task.id]?.cycles,
         tokens: runStats[task.id]?.tokens,
         activeSince: runStats[task.id]?.activeSince ?? undefined,
+        decision: task.decision
+          ? {
+              state: task.decision.state,
+              chosen: task.decision.chosen,
+              recommended: task.decision.recommended,
+              auto: task.decision.auto,
+            }
+          : null,
         seq,
       } satisfies GraphNodeData & { seq: number },
     }));

@@ -17,11 +17,14 @@ import { MiniGraph } from "@/components/layout/mini-graph";
 import { ProjectList } from "@/components/layout/project-list";
 import { SystemStats } from "@/components/layout/system-stats";
 import { UpdateControl } from "@/components/layout/update-control";
+import { DecisionIcon } from "@/components/task/decision-icon";
+import { usePendingDecisions } from "@/lib/use-pending-decisions";
 
 // Agent, Project and Memory are per project (/p/<id>/…); issues are global.
 const items = [
   { href: "/agent", label: "Agent", icon: MousePointer2, scoped: true },
   { href: "/project", label: "Project", icon: Box, scoped: true },
+  { href: "/decisions", label: "Decisions", icon: DecisionIcon, scoped: true },
   { href: "/memory", label: "Memory", icon: Brain, scoped: true },
   { href: "/artifacts", label: "Artifacts", icon: FileText, scoped: true },
   { href: "/issues", label: "Issues", icon: Bug, scoped: false },
@@ -30,6 +33,7 @@ const items = [
 export function SideNav() {
   const pathname = pagePath(usePathname());
   const projectId = useProjectId();
+  const pendingDecisions = usePendingDecisions();
 
   return (
     <aside className="flex w-[220px] shrink-0 flex-col bg-shell px-3 py-3 text-sidebar-foreground">
@@ -69,6 +73,14 @@ export function SideNav() {
             >
               <Icon className="size-4 shrink-0 opacity-80" strokeWidth={1.75} />
               {label}
+              {href === "/decisions" && pendingDecisions > 0 ? (
+                <span
+                  className="ml-auto rounded-full bg-violet-500/15 px-1.5 text-[11px] font-medium text-violet-700 tabular-nums dark:text-violet-300"
+                  title={`${pendingDecisions} decision${pendingDecisions === 1 ? "" : "s"} waiting for a choice`}
+                >
+                  {pendingDecisions}
+                </span>
+              ) : null}
             </Link>
           );
         })}
