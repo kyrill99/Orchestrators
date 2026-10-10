@@ -15,6 +15,11 @@ API (google-genai `client.interactions.create`):
    (a flag checked between steps, or the run ended in the shared log), or
    when a budget runs out (GEMINI_WORKER_MAX_STEPS model calls,
    GEMINI_WORKER_MAX_SECONDS wall time); the last two fail the run.
+4. If the server rejects the chained conversation itself (a 400 invalid_request
+   on a request with previous_interaction_id, e.g. "Model turns with thought
+   summaries must start with a thought block"), retrying cannot help: the run
+   starts a fresh interaction from a recap (brief, scratchpad, artifacts, last
+   tool calls, the tool results not yet delivered), at most MAX_RESEEDS times.
 
 Runs live in this process. If it exits (self-update restarts the service),
 the next process marks them 'lost' via RunManager.reconcile, and the engine
@@ -24,13 +29,14 @@ comments and what the previous attempt did.
 Env: GEMINI_WORKER_MODEL (gemini-3.8-flash), GEMINI_WORKER_MAX_STEPS (40),
      GEMINI_WORKER_MAX_SECONDS (1200),
      GEMINI_WORKER_BUILTIN_TOOLS (google_search,url_context,code_execution; "" for none;
-     url_context is dropped automatically if the API rejects it).
+     url_context is dropped automatically if the API rejects the tool).
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import re
 import socket
 import threading
 import time
@@ -121,6 +127,9 @@ th{font-weight:600}a{color:var(--accent)}
 </main></body></html>
 ```
 
+- Write the HTML yourself and pass it straight to save_artifact. Do not print whole \
+documents (HTML, code files) as chat messages, and do not assemble the report through \
+code_execution; use code_execution only for computing data.
 - Then finish_run with a short summary that names the report ("Report: <title>").
 - Skip the report only when there is nothing to read: pure bookkeeping or restructuring \
 the graph. Then say in the summary why there is no report."""
@@ -130,6 +139,7 @@ NUDGE = (
     "or call finish_run(outcome, summary) if you are done or cannot continue."
 )
 MAX_NUDGES = 2
+MAX_RESEEDS = 2  # fresh conversations per run after the server-side chain breaks
 
 
 def worker_instructions() -> str:
@@ -296,8 +306,9 @@ class _Loop:
                     input_ = f"{project_brief}\n\n{input_}"
             except Exception:  # noqa: BLE001 - context only
                 pass
+        self.brief = input_ if isinstance(input_, str) else ""
         previous: str | None = None
-        steps = nudges = 0
+        steps = nudges = reseeds = 0
         while True:
             if self.cancelled():
                 self.log("status", {"state": "stopped", "note": "stopped between steps"})
@@ -311,6 +322,17 @@ class _Loop:
             if previous:
                 kwargs["previous_interaction_id"] = previous
             interaction = self.create(client, kwargs)
+            if isinstance(interaction, _ChainBroken):
+                # The server-side conversation no longer accepts requests (e.g. a stored
+                # model turn became invalid): start over from a recap.
+                if reseeds >= MAX_RESEEDS:
+                    return self.fail_api(interaction.error, f"after {reseeds} conversation resets")
+                reseeds += 1
+                self.log("status", {"state": "reseeded", "note": "conversation reset after API error; "
+                                    f"continuing from a recap ({reseeds}/{MAX_RESEEDS})",
+                                    "error": truncate(str(interaction.error), 500)})
+                input_, previous = self.recap(input_), None
+                continue  # counts as a step
             if interaction is None:
                 return  # error recorded / run ended
             if self.cancelled():
@@ -353,28 +375,96 @@ class _Loop:
             input_ = results
 
     def create(self, client: Any, kwargs: dict[str, Any]) -> Any:
-        """interactions.create with retries for transient errors."""
+        """interactions.create with retries for transient errors.
+
+        Returns the interaction; None once the run has ended (error logged); or
+        _ChainBroken when a chained request (previous_interaction_id) keeps being
+        rejected as invalid, so the caller can start a fresh conversation."""
         delays = list(self.r.retry_delays)
+        chained = bool(kwargs.get("previous_interaction_id"))
+        bad_requests = 0
         while True:
             try:
                 return client.interactions.create(**kwargs)
             except Exception as e:  # noqa: BLE001 - the SDK raises many types
                 tools = kwargs.get("tools") or []
                 if any(t.get("type") == "url_context" for t in tools if isinstance(t, dict)) \
-                        and ("url_context" in str(e) or "400" in str(e) or "INVALID_ARGUMENT" in str(e)):
+                        and _is_bad_request(e) and _about_tools(e):
                     # Web page reading not accepted with this tool mix: keep going without it.
                     kwargs["tools"] = [t for t in tools if not (isinstance(t, dict) and t.get("type") == "url_context")]
                     self.r.builtin_tools = [t for t in self.r.builtin_tools if t != "url_context"]
                     self.log("error", {"message": f"url_context rejected, continuing without it: {e}"})
                     continue
+                if chained and _is_bad_request(e) and not self.cancelled():
+                    bad_requests += 1
+                    # invalid_request is not transient; other 400s get one retry.
+                    if _is_invalid_request(e) or bad_requests > 1:
+                        self.log("error", {"message": f"Gemini rejected the conversation: {e}"})
+                        return _ChainBroken(e)
                 if not delays or self.cancelled():
                     self.log("error", {"message": f"Gemini request failed: {e}"})
                     if not self.cancelled():
-                        self.end("failed", f"Gemini request failed: {truncate(str(e), 300)}")
+                        self.fail_api(e)
                     return None
                 delay = delays.pop(0)
                 self.log("error", {"message": f"Gemini request failed, retrying in {delay:g} s: {e}"})
                 self.live.cancel.wait(delay)
+
+    def fail_api(self, error: Exception, context: str = "") -> None:
+        """End the run after a fatal API error; say which artifacts it already saved."""
+        note = f"Gemini request failed{' ' + context if context else ''}: {truncate(str(error), 300)}"
+        mine = [a for a in self.saved_artifacts() if a.get("runId") in (None, self.run_.id)]
+        if mine:
+            names = ", ".join(a.get("filename") or a.get("title") or "?" for a in mine)
+            note += f". API error after saving artifacts ({names}); restart to finish"
+        self.end("failed", note)
+
+    def saved_artifacts(self) -> list[dict[str, Any]]:
+        """Artifacts on this task (store), or those this run saved (run log) without a store."""
+        store = self.r.artifacts
+        if store is not None:
+            try:
+                return list(store.list(self.task.id))
+            except Exception:  # noqa: BLE001 - context only
+                pass
+        out: dict[str, dict[str, Any]] = {}
+        for s in self.r.runlog.steps(self.run_.id, limit=5000):
+            p = s["payload"]
+            if s["kind"] == "tool_call" and p.get("name") == "save_artifact":
+                args = p.get("args") or {}
+                out[args.get("filename", "?")] = {"filename": args.get("filename"),
+                                                  "title": args.get("title"), "runId": self.run_.id}
+        return list(out.values())
+
+    def recap(self, pending: Any) -> str:
+        """The first message of a fresh conversation: the brief, the current state,
+        what was done so far and the input the broken conversation did not take."""
+        lines = ["[engine] The previous conversation was reset after an API error. You are "
+                 "continuing the same run; the work below is already done and saved, so do not "
+                 "redo it.", "", "## Original brief", truncate(self.brief, 8000) or "(see the task)"]
+        pad = self.r.scratchpads.get(self.task.id)["content"].strip()
+        lines += ["", "## Scratchpad now", truncate(pad, 6000) if pad else "(empty)"]
+        arts = self.saved_artifacts()
+        lines += ["", "## Artifacts saved on this task"]
+        lines += [f"- {a.get('title') or '(untitled)'}: {a.get('filename')}"
+                  + (" (this run)" if a.get("runId") == self.run_.id else "") for a in arts] or ["(none)"]
+        steps = self.r.runlog.steps(self.run_.id, limit=5000)
+        calls = [s["payload"] for s in steps if s["kind"] == "tool_call"][-20:]
+        lines += ["", "## Your last tool calls (oldest first)"]
+        lines += [f"- {c.get('name')}({_brief_args(c.get('args'))})" for c in calls] or ["(none)"]
+        said = [s["payload"].get("text", "") for s in steps if s["kind"] == "message"][-3:]
+        if said:
+            lines += ["", "## What you last said"] + [f"- {truncate(t, 400)}" for t in said]
+        if isinstance(pending, list) and pending:
+            lines += ["", "## Results of your last tool calls (not yet seen by you)"]
+            for item in pending:
+                if isinstance(item, dict):
+                    lines.append(f"### {item.get('name')}\n{truncate(str(item.get('result', '')), 4000)}")
+        elif isinstance(pending, str) and pending and pending != self.brief:
+            lines += ["", "## Last message to you", truncate(pending, 2000)]
+        lines += ["", "Continue from here with your tools. Save the report with save_artifact if it "
+                  "is not saved yet, then call finish_run(outcome, summary)."]
+        return "\n".join(lines)
 
     def record(self, interaction: Any) -> list[Any]:
         """Log the interaction's steps; return its function calls."""
@@ -410,6 +500,47 @@ class _Loop:
 
 
 # ---- helpers -----------------------------------------------------------------
+
+
+@dataclass
+class _ChainBroken:
+    """create(): the chained conversation is rejected; start a fresh one."""
+
+    error: Exception
+
+
+def _is_bad_request(e: Exception) -> bool:
+    code = getattr(e, "status_code", None)
+    if code is not None:
+        return code == 400
+    msg = str(e)
+    return bool(re.search(r"\b400\b", msg)) or "INVALID_ARGUMENT" in msg
+
+
+def _is_invalid_request(e: Exception) -> bool:
+    msg = str(e)
+    return "invalid_request" in msg or "INVALID_ARGUMENT" in msg
+
+
+def _about_tools(e: Exception) -> bool:
+    """Is a 400 plausibly about the tool set (url_context not accepted) rather than
+    about the conversation? e.g. "'url_context' and 'file_search' cannot be combined"."""
+    msg = str(e).lower()
+    if "url_context" in msg or "url context" in msg:
+        return True
+    return bool(re.search(r"\btools?\b", msg)) and bool(
+        re.search(r"combin|unsupported|not supported|not allowed|not enabled|incompatible", msg))
+
+
+def _brief_args(args: Any) -> str:
+    """Key arguments of a logged tool call, without long bodies (content, code)."""
+    if not isinstance(args, dict):
+        return ""
+    parts = []
+    for k, v in args.items():
+        v = v if isinstance(v, str) else str(v)
+        parts.append(f"{k}=<{len(v)} chars>" if len(v) > 120 else f"{k}={v!r}")
+    return ", ".join(parts)
 
 
 def _default_client() -> Any:

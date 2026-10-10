@@ -20,6 +20,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from fastapi import FastAPI  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
+from artifacts import ArtifactStore  # noqa: E402
 from db import Database  # noqa: E402
 from memory.service import MemoryService  # noqa: E402
 from memory.store import MarkdownMemoryStore  # noqa: E402
@@ -78,6 +79,17 @@ class FakeInteractions:
             raise item
         out = item(kwargs) if callable(item) else item
         return NS(**{**vars(out), "id": f"i{len(self.calls)}"})
+
+
+class FakeAPIError(Exception):
+    """Like the SDK's APIStatusError: a status_code and the API's message."""
+
+    def __init__(self, status_code, message, code="invalid_request"):
+        super().__init__(f"Error code: {status_code} - {{'error': {{'message': {message!r}, 'code': '{code}'}}}}")
+        self.status_code = status_code
+
+
+THOUGHT_400 = "Model turns with thought summaries must start with a thought block in thinking models."
 
 
 class FakeClient:
@@ -304,6 +316,119 @@ class GeminiRunnerTest(Base):
         brief = build_brief(self.svc, self.pads, self.runlog, None, dep, self.svc.state.tasks["later"])
         self.assertIn("What the tasks before this one produced", brief)
         self.assertIn("Wrote the three bullets.", brief)
+
+
+class GeminiRecoveryTest(Base):
+    """A chained conversation the API rejects is re-seeded from a recap."""
+
+    def store(self):
+        return ArtifactStore(self.db, os.path.join(self.tmp.name, "files")).scoped("default")
+
+    def save_and_note(self):
+        return reply(call("write_scratchpad", {"content": "Sprites done; sounds next."}),
+                     call("save_artifact", {"filename": "report.html", "title": "Asset report",
+                                            "content": "<!doctype html><p>hi</p>"}))
+
+    def test_poisoned_chain_is_reseeded_from_a_recap(self):
+        client = FakeClient([
+            self.save_and_note(),
+            FakeAPIError(400, THOUGHT_400),
+            reply(call("finish_run", {"outcome": "succeeded", "summary": "Report: Asset report"})),
+        ])
+        runner = self.runner(client, artifacts=self.store(), retry_delays=(0.01, 0.01))
+        run = RunManager(self.svc, runner).start(H, "t", "go")
+        self.assertTrue(runner.join(run.id, 5))
+        self.assertEqual(self.svc.run(run.id).status, "succeeded")
+        self.assertEqual(self.svc.task("t")["status"], "in-review")
+        first, broken, fresh = client.interactions.calls
+        self.assertEqual(broken["previous_interaction_id"], "i1")
+        self.assertNotIn("previous_interaction_id", fresh)
+        recap = fresh["input"]
+        self.assertIsInstance(recap, str)
+        self.assertIn("Summarise orchestrators", recap)  # the brief
+        self.assertIn("Sprites done; sounds next.", recap)  # the scratchpad
+        self.assertIn("Asset report: report.html", recap)  # the artifacts
+        self.assertIn("save_artifact(", recap)  # what was done
+        self.assertIn("saved and listed", recap)  # the pending function results
+        self.assertIn("finish_run", recap)
+        self.assertIn(("status", "reseeded"), self.kinds(run.id))
+
+    def test_reseeds_are_capped_and_the_note_names_the_artifacts(self):
+        client = FakeClient([
+            self.save_and_note(), FakeAPIError(400, THOUGHT_400),
+            reply(call("add_comment", {"body": "again"})), FakeAPIError(400, THOUGHT_400),
+            reply(call("add_comment", {"body": "again"})), FakeAPIError(400, THOUGHT_400),
+        ])
+        runner = self.runner(client, artifacts=self.store())
+        run = RunManager(self.svc, runner).start(H, "t", "go")
+        self.assertTrue(runner.join(run.id, 5))
+        self.assertEqual(len(client.interactions.calls), 6)
+        ended = self.svc.run(run.id)
+        self.assertEqual(ended.status, "failed")
+        self.assertIn("after 2 conversation resets", ended.note)
+        self.assertIn("report.html", ended.note)
+        self.assertIn("restart to finish", ended.note)
+        self.assertEqual(self.svc.task("t")["status"], "open")
+
+    def test_reseeds_count_against_the_step_budget(self):
+        client = FakeClient([self.save_and_note(), FakeAPIError(400, THOUGHT_400)],
+                            default=reply(call("add_comment", {"body": "x"})))
+        runner = self.runner(client, artifacts=self.store(), max_steps=3)
+        run = RunManager(self.svc, runner).start(H, "t", "go")
+        self.assertTrue(runner.join(run.id, 5))
+        self.assertEqual(len(client.interactions.calls), 3)
+        self.assertIn("budget", self.svc.run(run.id).note)
+
+    def test_other_400_on_a_chain_is_retried_once_then_reseeded(self):
+        client = FakeClient([
+            reply(call("add_comment", {"body": "hi"})),
+            FakeAPIError(400, "Something odd.", code="bad"), FakeAPIError(400, "Something odd.", code="bad"),
+            reply(call("finish_run", {"outcome": "succeeded", "summary": "ok"})),
+        ])
+        runner = self.runner(client, retry_delays=(0.01, 0.01))
+        run = RunManager(self.svc, runner).start(H, "t", "go")
+        self.assertTrue(runner.join(run.id, 5))
+        self.assertEqual(self.svc.run(run.id).status, "succeeded")
+        calls = client.interactions.calls
+        self.assertEqual([c.get("previous_interaction_id") for c in calls], [None, "i1", "i1", None])
+
+    def test_transient_errors_on_a_chain_still_retry(self):
+        client = FakeClient([
+            reply(call("add_comment", {"body": "hi"})),
+            FakeAPIError(503, "overloaded", code="unavailable"),
+            reply(call("finish_run", {"outcome": "succeeded", "summary": "ok"})),
+        ])
+        runner = self.runner(client, retry_delays=(0.01,))
+        run = RunManager(self.svc, runner).start(H, "t", "go")
+        self.assertTrue(runner.join(run.id, 5))
+        self.assertEqual(self.svc.run(run.id).status, "succeeded")
+        calls = client.interactions.calls
+        self.assertEqual([c.get("previous_interaction_id") for c in calls], [None, "i1", "i1"])
+        self.assertNotIn(("status", "reseeded"), self.kinds(run.id))
+
+    def test_url_context_is_dropped_only_when_the_tool_is_rejected(self):
+        url = {"type": "url_context"}
+        client = FakeClient([
+            FakeAPIError(400, "'url_context' and 'file_search' cannot be combined in the same request."),
+            reply(call("finish_run", {"outcome": "succeeded", "summary": "ok"})),
+        ])
+        runner = self.runner(client, builtin_tools=["google_search", "url_context"])
+        run = RunManager(self.svc, runner).start(H, "t", "go")
+        self.assertTrue(runner.join(run.id, 5))
+        self.assertEqual(self.svc.run(run.id).status, "succeeded")
+        first, second = client.interactions.calls
+        self.assertIn(url, first["tools"])
+        self.assertNotIn(url, second["tools"])
+        # Any other 400 keeps url_context.
+        client = FakeClient([FakeAPIError(400, "Invalid JSON payload: syntax error in request body."),
+                             FakeAPIError(400, THOUGHT_400)])
+        runner = self.runner(client, builtin_tools=["google_search", "url_context"], retry_delays=(0.01,))
+        run = RunManager(self.svc, runner).start(H, "u", "go")
+        self.assertTrue(runner.join(run.id, 5))
+        self.assertEqual(self.svc.run(run.id).status, "failed")
+        self.assertTrue(all(url in c["tools"] for c in client.interactions.calls))
+        self.assertFalse(any("url_context rejected" in s["payload"].get("message", "")
+                             for s in self.runlog.steps(run.id)))
 
 
 class EngineTest(Base):
