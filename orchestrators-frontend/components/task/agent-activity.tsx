@@ -7,12 +7,14 @@ import {
   Check,
   ChevronRight,
   CircleDot,
+  GitCommitHorizontal,
   MessageSquare,
   Wrench,
 } from "lucide-react";
 import {
   fetchRunSteps,
   fetchTaskRuns,
+  type RunLanding,
   type RunRecord,
   type RunStep,
 } from "@/lib/api";
@@ -347,39 +349,122 @@ function RunTranscript({ runId, status }: { runId: string; status: string }) {
   }, [steps]);
 
   const items = useMemo(() => group(steps), [steps]);
+  const landing = useMemo(() => {
+    const step = [...steps].reverse().find((s) => s.kind === "landing");
+    return step ? (step.payload as unknown as RunLanding) : null;
+  }, [steps]);
 
   return (
-    <div
-      ref={scroller}
-      onScroll={(e) => {
-        const el = e.currentTarget;
-        stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
-      }}
-      className="max-h-[520px] overflow-auto rounded-xl border border-border bg-background"
-    >
-      <ol className="flex flex-col divide-y divide-border/70">
-        {items.map((item) => (
-          <li key={item.step.seq} className="px-3.5 py-2.5">
-            <StepView item={item} />
+    <>
+      {landing?.state === "pushed" ? <PushedCommits landing={landing} /> : null}
+      <div
+        ref={scroller}
+        onScroll={(e) => {
+          const el = e.currentTarget;
+          stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+        }}
+        className="max-h-[520px] overflow-auto rounded-xl border border-border bg-background"
+      >
+        <ol className="flex flex-col divide-y divide-border/70">
+          {items.map((item) => (
+            <li key={item.step.seq} className="px-3.5 py-2.5">
+              <StepView item={item} />
+            </li>
+          ))}
+          {active ? (
+            <li className="flex items-center gap-2 px-3.5 py-2.5 text-xs text-muted-foreground">
+              <span className="flex gap-0.5">
+                <span className="size-1 animate-bounce rounded-full bg-muted-foreground [animation-delay:-0.3s]" />
+                <span className="size-1 animate-bounce rounded-full bg-muted-foreground [animation-delay:-0.15s]" />
+                <span className="size-1 animate-bounce rounded-full bg-muted-foreground" />
+              </span>
+              Working…
+            </li>
+          ) : null}
+          {!items.length && !active ? (
+            <li className="px-3.5 py-2.5 text-xs text-muted-foreground">
+              This run recorded no steps (it was not executed by an in-process agent).
+            </li>
+          ) : null}
+        </ol>
+        {error ? <p className="px-3.5 pb-2 text-xs text-destructive">{error}</p> : null}
+      </div>
+    </>
+  );
+}
+
+/** Commits this run pushed to the project's repository, and the files they changed. */
+function PushedCommits({ landing }: { landing: RunLanding }) {
+  const commits = landing.commits ?? [];
+  const files = landing.files ?? [];
+  return (
+    <div className="mb-3 rounded-xl border border-border bg-background px-3.5 py-2.5 text-[13px]">
+      <div className="mb-1.5 flex items-center gap-2">
+        <GitCommitHorizontal className="size-3.5 shrink-0 text-emerald-600" strokeWidth={1.75} />
+        <span className="font-medium text-foreground">
+          Pushed {commits.length} {commits.length === 1 ? "commit" : "commits"} to{" "}
+          {landing.branch ?? "main"}
+        </span>
+        <span className="text-[11px] text-muted-foreground tabular-nums">
+          <span className="text-emerald-600">+{landing.added ?? 0}</span>{" "}
+          <span className="text-red-600">-{landing.removed ?? 0}</span>
+        </span>
+        {landing.compareUrl ? (
+          <a
+            href={landing.compareUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="ml-auto text-[11px] text-[#5E6AD2] hover:underline"
+          >
+            Compare
+          </a>
+        ) : null}
+      </div>
+      <ul className="flex flex-col gap-0.5">
+        {commits.map((c) => (
+          <li key={c.sha} className="flex min-w-0 items-baseline gap-2">
+            {c.url ? (
+              <a
+                href={c.url}
+                target="_blank"
+                rel="noreferrer"
+                className="shrink-0 font-mono text-[11px] text-[#5E6AD2] hover:underline"
+              >
+                {c.short.slice(0, 7)}
+              </a>
+            ) : (
+              <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
+                {c.short.slice(0, 7)}
+              </span>
+            )}
+            <span className="min-w-0 truncate text-foreground">{c.subject}</span>
           </li>
         ))}
-        {active ? (
-          <li className="flex items-center gap-2 px-3.5 py-2.5 text-xs text-muted-foreground">
-            <span className="flex gap-0.5">
-              <span className="size-1 animate-bounce rounded-full bg-muted-foreground [animation-delay:-0.3s]" />
-              <span className="size-1 animate-bounce rounded-full bg-muted-foreground [animation-delay:-0.15s]" />
-              <span className="size-1 animate-bounce rounded-full bg-muted-foreground" />
-            </span>
-            Working…
-          </li>
-        ) : null}
-        {!items.length && !active ? (
-          <li className="px-3.5 py-2.5 text-xs text-muted-foreground">
-            This run recorded no steps (it was not executed by an in-process agent).
-          </li>
-        ) : null}
-      </ol>
-      {error ? <p className="px-3.5 pb-2 text-xs text-destructive">{error}</p> : null}
+      </ul>
+      {files.length ? (
+        <details className="mt-1.5">
+          <summary className="cursor-pointer text-[11px] text-muted-foreground">
+            {files.length} {files.length === 1 ? "file" : "files"} changed
+          </summary>
+          <ul className="mt-1 flex flex-col gap-0.5 font-mono text-[11px]">
+            {files.map((f) => (
+              <li key={f.path} className="flex min-w-0 gap-2">
+                <span className="min-w-0 truncate text-foreground">{f.path}</span>
+                <span className="ml-auto shrink-0 tabular-nums">
+                  {f.added === null ? (
+                    <span className="text-muted-foreground">binary</span>
+                  ) : (
+                    <>
+                      <span className="text-emerald-600">+{f.added}</span>{" "}
+                      <span className="text-red-600">-{f.removed}</span>
+                    </>
+                  )}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </details>
+      ) : null}
     </div>
   );
 }
@@ -494,6 +579,27 @@ function StepView({ item }: { item: Item }) {
             ) : null}
           </div>
         </details>
+      );
+    }
+    case "landing": {
+      const landing = p as unknown as RunLanding;
+      const pushed = landing.state === "pushed";
+      const n = landing.commits?.length ?? 0;
+      return (
+        <div
+          className={cn(
+            "flex gap-2.5 text-[13px]",
+            pushed ? "text-foreground" : "text-destructive",
+          )}
+        >
+          <GitCommitHorizontal className="mt-0.5 size-3.5 shrink-0" strokeWidth={1.75} />
+          <p className="min-w-0 flex-1 whitespace-pre-wrap">
+            {pushed
+              ? `Pushed ${n} ${n === 1 ? "commit" : "commits"} to ${landing.branch ?? "main"}`
+              : `Not pushed: ${landing.error ?? "landing failed"}`}
+          </p>
+          <Time at={step.at} />
+        </div>
       );
     }
     case "error":

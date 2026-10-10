@@ -254,7 +254,8 @@ export type RunStepKind =
   | "tool_call"
   | "tool_result"
   | "error"
-  | "status";
+  | "status"
+  | "landing";
 
 export type RunStep = {
   runId: string;
@@ -275,6 +276,19 @@ export type RunStep = {
     message?: string;
     [key: string]: unknown;
   };
+};
+
+/** Payload of a "landing" step: the run's commits pushed to the project repo, or why not. */
+export type RunLanding = {
+  state: "pushed" | "failed";
+  branch?: string;
+  commits?: { sha: string; short: string; subject: string; url?: string }[];
+  files?: { path: string; added: number | null; removed: number | null }[];
+  added?: number;
+  removed?: number;
+  compareUrl?: string | null;
+  kind?: string;
+  error?: string;
 };
 
 export type RunStepsPage = {
