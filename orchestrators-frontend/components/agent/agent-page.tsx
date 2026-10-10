@@ -21,6 +21,13 @@ import {
 } from "@/lib/api";
 import { useLiveConversations } from "@/lib/use-live-conversations";
 import {
+  notifyTyping,
+  stopTyping,
+  useAnnouncePresence,
+  usePresenceSnapshot,
+} from "@/lib/presence";
+import { AvatarStack, TypingLine } from "@/components/presence/presence";
+import {
   VOICE_OPENERS,
   VoiceConversation,
 } from "@/lib/gradium/voice-conversation";
@@ -48,6 +55,13 @@ export function AgentPage() {
   const voiceRef = useRef<VoiceConversation | null>(null);
   const submittingRef = useRef(false);
   const now = useNow();
+  // Teammates in the agent chat (any conversation), for the header.
+  const agentPeople = useAnnouncePresence("agent", selectedId);
+
+  useEffect(() => {
+    if (draft.trim()) notifyTyping();
+    else stopTyping();
+  }, [draft]);
 
   useEffect(() => {
     detailRef.current = live.detail;
@@ -172,6 +186,9 @@ export function AgentPage() {
           New chat
           <ChevronDown className="size-3.5 text-muted-foreground" strokeWidth={1.75} />
         </button>
+        <span className="ml-auto mr-1">
+          <AvatarStack people={agentPeople} size={20} />
+        </span>
         <span
           className="inline-flex items-center gap-1.5 px-2 text-xs text-muted-foreground"
           title={
@@ -628,9 +645,17 @@ function Composer({
   onSend: () => void;
 }) {
   const canSend = draft.trim().length > 0 && !busy;
+  const presence = usePresenceSnapshot();
+  const typingHere = presence.others.filter(
+    (p) =>
+      p.where === "agent" &&
+      p.typing &&
+      (p.conversation_id ?? null) === presence.conversationId,
+  );
 
   return (
     <div>
+      <TypingLine people={typingHere} className="mb-1 px-1" />
       <div className="rounded-2xl border border-border bg-background shadow-[0_1px_2px_rgba(0,0,0,0.04)]">
         <textarea
           value={draft}

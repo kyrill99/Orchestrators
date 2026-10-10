@@ -16,6 +16,8 @@ import { RunControl } from "@/components/task/run-control";
 import { StatusBadge } from "@/components/task/status-badge";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { HereLine, TypingLine } from "@/components/presence/presence";
+import { notifyTyping, useAnnouncePresence } from "@/lib/presence";
 
 type FeedItem = { kind: "activity"; at: string; activity: TaskActivity };
 
@@ -26,6 +28,9 @@ export function TaskIssuePage({ id }: { id: string }) {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [assignee, setAssignee] = useState<AssigneeId>("unassigned");
+  const [comment, setComment] = useState("");
+  // Teammates with this task open (and whether they are typing here).
+  const here = useAnnouncePresence(`task:${id}`);
 
   useEffect(() => {
     setAssignee(loadAssignee(id));
@@ -114,7 +119,15 @@ export function TaskIssuePage({ id }: { id: string }) {
 
   return (
     <div className="flex h-full overflow-hidden">
-      <div className="min-w-0 flex-1 overflow-auto">
+      <div
+        className="min-w-0 flex-1 overflow-auto"
+        onKeyDown={(event) => {
+          const target = event.target as HTMLElement;
+          if (target.tagName === "TEXTAREA" || target.tagName === "INPUT") {
+            notifyTyping();
+          }
+        }}
+      >
         <div className="mx-auto max-w-3xl px-6 py-7 sm:px-10">
           <Link
             href="/project"
@@ -129,6 +142,7 @@ export function TaskIssuePage({ id }: { id: string }) {
             <span className="font-mono text-[11px] text-muted-foreground">
               {task.id}
             </span>
+            <HereLine people={here} />
             {task.kind === "task" ? (
               <div className="ml-auto">
                 <RunControl taskId={task.id} />
@@ -195,11 +209,13 @@ export function TaskIssuePage({ id }: { id: string }) {
             <h2 className="mb-2 text-[13px] font-medium text-foreground">
               Comment
             </h2>
+            <TypingLine people={here} className="mb-1" />
             <Textarea
               placeholder="Leave a comment…"
               className="min-h-[88px] resize-none text-[13px]"
-              disabled
-              aria-label="Comment (coming soon)"
+              value={comment}
+              onChange={(event) => setComment(event.target.value)}
+              aria-label="Comment (posting coming soon)"
             />
             <div className="mt-2 flex justify-end">
               <Button type="button" size="sm" disabled>

@@ -28,6 +28,9 @@ from issues import build_router as build_issues_router
 from memory import MemoryService
 from memory.api import build_router as build_memory_router
 from memory.distill import GeminiDistiller
+from presence import CHANNEL as PRESENCE_CHANNEL
+from presence import PresenceStore
+from presence import build_router as build_presence_router
 from selfupdate import build_router as build_selfupdate_router
 from storage import open_memory_store, open_taskgraph_store
 from sysstats import build_router as build_sysstats_router
@@ -63,7 +66,7 @@ db = Database()
 
 # In-process pub/sub for live updates (SSE); see events.py. One uvicorn worker.
 broker = Broker()
-app.include_router(build_events_router(broker, ["graph", CONVERSATIONS_CHANNEL]))
+app.include_router(build_events_router(broker, ["graph", CONVERSATIONS_CHANNEL, PRESENCE_CHANNEL]))
 
 # Every task graph event appended by this process is also published live on
 # the "graph" channel (GET /api/events?channel=graph).
@@ -91,6 +94,17 @@ app.include_router(build_changelog_router("data"))
 app.include_router(build_sysstats_router())
 # GET /api/me plus per-user state; replaces identity.build_router().
 app.include_router(build_userstate_router(UserStateStore(db)))
+
+# Who is where / typing (ephemeral, in memory); see presence.py.
+app.include_router(
+    build_presence_router(
+        PresenceStore(
+            on_change=lambda entries: broker.publish(
+                PRESENCE_CHANNEL, "presence", entries
+            )
+        )
+    )
+)
 
 app.include_router(
     build_conversations_router(ConversationService(ConversationStore(db), broker))

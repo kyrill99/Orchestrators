@@ -7,6 +7,7 @@ import { apiBaseUrl, type AgentRun } from "@/lib/api";
 import type { Task, TaskEdge, TaskStatus } from "@/lib/fixtures";
 import { layoutGraph, mapApiTask, type ApiTask } from "@/lib/taskgraph-api";
 import { cn } from "@/lib/utils";
+import { presenceColor, presenceName, usePresenceSnapshot } from "@/lib/presence";
 
 const POLL_MS = 3000;
 const WIDTH = 194;
@@ -119,6 +120,8 @@ export function MiniGraph() {
   const router = useRouter();
   const graph = useLiveGraph();
   const [hovered, setHovered] = useState<string | null>(null);
+  // Teammates with a task open get a coloured dot on that node.
+  const presence = usePresenceSnapshot();
 
   const structure = graph?.structure;
   const layout = useMemo(() => {
@@ -287,6 +290,22 @@ export function MiniGraph() {
                 strokeWidth={1}
                 className="transition-[r] duration-150"
               />
+              {presence.others
+                .filter((e) => e.where === `task:${id}`)
+                .slice(0, 3)
+                .map((e, index) => (
+                  <circle
+                    key={e.email}
+                    cx={p.x + r + 1.5 + index * 3.5}
+                    cy={p.y - r - 0.5}
+                    r={2}
+                    fill={presenceColor(e.email)}
+                    stroke="var(--background)"
+                    strokeWidth={0.75}
+                  >
+                    <title>{`${presenceName(e)} is here`}</title>
+                  </circle>
+                ))}
               {/* Larger invisible hit target for tiny nodes. */}
               <circle cx={p.x} cy={p.y} r={Math.max(r + 3, 6)} fill="transparent" />
             </g>

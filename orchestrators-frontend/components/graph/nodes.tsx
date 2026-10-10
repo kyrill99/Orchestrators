@@ -3,6 +3,8 @@
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import { Bot } from "lucide-react";
 import { StatusBadge } from "@/components/task/status-badge";
+import { AvatarStack } from "@/components/presence/presence";
+import { usePresenceAt } from "@/lib/presence";
 import type { TaskKind, TaskStatus } from "@/lib/fixtures";
 import { cn } from "@/lib/utils";
 
@@ -14,11 +16,24 @@ export type GraphNodeData = {
   agent?: string;
 };
 
+/** Teammates who have this task open, as small avatars on the node corner. */
+function NodePresence({ id }: { id: string }) {
+  const people = usePresenceAt(`task:${id}`);
+  if (people.length === 0) return null;
+  return (
+    <span className="pointer-events-none absolute -top-2.5 -right-2 z-10">
+      <AvatarStack people={people} size={18} max={3} />
+    </span>
+  );
+}
+
 function NodeChrome({
+  id,
   data,
   selected,
   className,
 }: {
+  id: string;
   data: GraphNodeData;
   selected?: boolean;
   className?: string;
@@ -26,13 +41,14 @@ function NodeChrome({
   return (
     <div
       className={cn(
-        "min-w-[168px] max-w-[220px] cursor-pointer border bg-background px-3 py-2.5 shadow-[0_1px_2px_rgba(0,0,0,0.04)] transition-[border-color,box-shadow]",
+        "relative min-w-[168px] max-w-[220px] cursor-pointer border bg-background px-3 py-2.5 shadow-[0_1px_2px_rgba(0,0,0,0.04)] transition-[border-color,box-shadow]",
         selected
           ? "border-foreground/40 shadow-[0_1px_3px_rgba(0,0,0,0.08)]"
           : "border-border hover:border-foreground/20",
         className,
       )}
     >
+      <NodePresence id={id} />
       <Handle
         type="target"
         position={Position.Top}
@@ -64,9 +80,10 @@ function NodeChrome({
   );
 }
 
-export function StartNode({ data, selected }: NodeProps) {
+export function StartNode({ id, data, selected }: NodeProps) {
   return (
     <NodeChrome
+      id={id}
       data={data as GraphNodeData}
       selected={selected}
       className="rounded-full px-4 text-center"
@@ -74,9 +91,10 @@ export function StartNode({ data, selected }: NodeProps) {
   );
 }
 
-export function TaskNode({ data, selected }: NodeProps) {
+export function TaskNode({ id, data, selected }: NodeProps) {
   return (
     <NodeChrome
+      id={id}
       data={data as GraphNodeData}
       selected={selected}
       className="rounded-md"
@@ -84,10 +102,11 @@ export function TaskNode({ data, selected }: NodeProps) {
   );
 }
 
-export function DecisionNode({ data, selected }: NodeProps) {
+export function DecisionNode({ id, data, selected }: NodeProps) {
   const nodeData = data as GraphNodeData;
   return (
     <div className="relative flex h-[108px] w-[108px] cursor-pointer items-center justify-center">
+      <NodePresence id={id} />
       <Handle
         type="target"
         position={Position.Top}
@@ -116,9 +135,10 @@ export function DecisionNode({ data, selected }: NodeProps) {
   );
 }
 
-export function EndNode({ data, selected }: NodeProps) {
+export function EndNode({ id, data, selected }: NodeProps) {
   return (
     <NodeChrome
+      id={id}
       data={data as GraphNodeData}
       selected={selected}
       className="rounded-full px-4 text-center"
