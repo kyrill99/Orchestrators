@@ -1,8 +1,9 @@
 const DEFAULT_API_URL = "http://localhost:8000";
 
 export function apiBaseUrl(): string {
+  // Empty (production build) means same-origin /api, routed by oauth2-proxy.
   return (
-    process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") || DEFAULT_API_URL
+    process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") ?? DEFAULT_API_URL
   );
 }
 

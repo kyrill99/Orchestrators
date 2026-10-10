@@ -15,6 +15,7 @@ from services.gradium import create_browser_token
 from memory import MarkdownMemoryStore, MemoryService
 from memory.api import build_router as build_memory_router
 from memory.distill import GeminiDistiller
+from selfupdate import build_router as build_selfupdate_router
 from taskgraph import JsonlEventStore, TaskGraphService
 from taskgraph.api import build_router
 
@@ -45,6 +46,10 @@ memory = MemoryService(
     GeminiDistiller(MODEL) if os.environ.get("GEMINI_API_KEY") else None,
 )
 app.include_router(build_memory_router(memory, taskgraph))
+
+# Must match DATA in deploy/gcp/update.sh.
+app.include_router(build_selfupdate_router("data"))
+
 
 class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1)

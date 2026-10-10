@@ -9,6 +9,7 @@ import {
   MousePointer2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { UpdateControl } from "@/components/layout/update-control";
 
 const items = [
   { href: "/agent", label: "Agent", icon: MousePointer2 },
@@ -59,6 +60,8 @@ export function SideNav() {
           );
         })}
       </nav>
+
+      <UpdateControl />
     </aside>
   );
 }

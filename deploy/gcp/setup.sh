@@ -99,7 +99,7 @@ fi
 echo "==> Frontend build"
 cd "$APP_DIR/orchestrators-frontend"
 sudo -u "$APP_USER" npm ci --no-audit --no-fund --loglevel=error
-sudo -u "$APP_USER" NEXT_TELEMETRY_DISABLED=1 npm run build
+sudo -u "$APP_USER" NEXT_TELEMETRY_DISABLED=1 NEXT_PUBLIC_API_URL= npm run build
 
 echo "==> Backend venv"
 cd "$APP_DIR/orchestrators-backend"
@@ -175,6 +175,28 @@ Restart=always
 WantedBy=multi-user.target
 EOF
 
+# Self-update: the backend drops data/update.request (POST /api/admin/update),
+# the path unit notices and runs the root-owned update script.
+install -m 755 -o root -g root "$APP_DIR/deploy/gcp/update.sh" /usr/local/sbin/orchestrators-update
+
+cat > /etc/systemd/system/orchestrators-update.service <<EOF
+[Unit]
+Description=Orchestrators self-update (git pull, rebuild, restart)
+[Service]
+Type=oneshot
+Environment=BRANCH=${BRANCH}
+ExecStart=/usr/local/sbin/orchestrators-update
+EOF
+
+cat > /etc/systemd/system/orchestrators-update.path <<EOF
+[Unit]
+Description=Watch for Orchestrators self-update requests
+[Path]
+PathExists=${APP_DIR}/orchestrators-backend/data/update.request
+[Install]
+WantedBy=multi-user.target
+EOF
+
 cat > /etc/caddy/Caddyfile <<EOF
 ${HOST} {
     encode gzip
@@ -184,13 +206,15 @@ EOF
 
 systemctl daemon-reload
 systemctl enable -q orchestrators-frontend orchestrators-backend oauth2-proxy caddy
+systemctl enable -q --now orchestrators-update.path
 systemctl restart orchestrators-frontend orchestrators-backend oauth2-proxy caddy
 
 sleep 3
-for s in orchestrators-frontend orchestrators-backend oauth2-proxy caddy; do
+for s in orchestrators-frontend orchestrators-backend oauth2-proxy caddy orchestrators-update.path; do
   printf '%-24s %s\n' "$s" "$(systemctl is-active $s)"
 done
 echo
 echo "Done. Open https://${HOST}  (first HTTPS request may take ~30s while the certificate is issued)"
 echo "OAuth redirect URI to register: https://${HOST}/oauth2/callback"
 echo "Logs: journalctl -u oauth2-proxy -u caddy -u orchestrators-frontend -f"
+echo "Self-update: Update button in the UI, or: sudo systemctl start orchestrators-update  (logs: journalctl -u orchestrators-update)"
