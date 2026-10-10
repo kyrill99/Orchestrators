@@ -13,7 +13,7 @@ from strategy_interview.llm_io import (
 )
 from strategy_interview.schema import ItemKey, Source
 
-from .test_advisor import research_picture
+from test_advisor import research_picture
 
 IO_MODELS = [ExtractionResult, QuestionDraft, GuardVerdict, AdviceDraft, OwnerReply]
 
@@ -172,7 +172,7 @@ class EvalHarnessTests(unittest.TestCase):
         from strategy_interview import evals
         from strategy_interview.llm_io import AdviceDraft, ExtractionResult, OwnerReply
 
-        from .fakes import FakeLLM, extraction, item
+        from fakes import FakeLLM, extraction, item
 
         llm = FakeLLM()
         llm.default(OwnerReply, OwnerReply(answer="It's research, rigour first."))

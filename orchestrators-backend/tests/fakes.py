@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from collections import defaultdict
 from dataclasses import dataclass
@@ -10,6 +11,9 @@ from typing import Any, Callable
 from pydantic import BaseModel
 
 from strategy_interview.llm_io import GuardVerdict, QuestionDraft
+
+# The tests trigger fallbacks on purpose; keep their warnings out of the output.
+logging.getLogger("strategy_interview").setLevel(logging.CRITICAL)
 
 
 @dataclass

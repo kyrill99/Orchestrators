@@ -29,6 +29,8 @@ See [`.env.example`](.env.example). Required / expected keys:
 | --- | --- |
 | `GEMINI_API_KEY` | Google Gemini API access |
 | `GRADIUM_API_KEY` | Gradium API access |
+| `MEMORY_PATH` | Memory directory (optional, default `data/memory`) |
+| `CORS_ORIGINS` | Origins allowed to call the API (optional, default `http://localhost:3000`) |
 
 Never commit `.env`.
 
@@ -62,9 +64,10 @@ orchestrators-backend/
   services/
     gradium.py       # Gradium browser token minting
     agent.py         # Gemini strategy chat
+  taskgraph/         # task graph: service, REST, MCP (see taskgraph/API.md)
+  memory/            # memory across sessions: service, REST, MCP (see memory/API.md)
   strategy_interview/  # objective interview & strategy picture (see its README)
-  orchestration/     # tool contract: teammates register tools, the workflow calls them
-  tests/             # offline tests for the two packages above
+  tests/
   requirements.txt
   .env.example
   README.md

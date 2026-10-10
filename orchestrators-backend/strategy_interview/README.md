@@ -6,8 +6,8 @@ and confidence). Agents read it as a brief and decide implementation details the
 when they are unsure they call `ask_strategy`, which answers from the picture and only
 asks the owner a strategy question when it has to.
 
-Next to it, `../orchestration/` holds the tool contract the workflow generator uses to
-call teammates' tools.
+The workflow generator (the planner) uses the picture and calls teammates' tools over
+MCP: the task graph and memory servers in `../taskgraph/` and `../memory/`.
 
 The full definition (schema, defaults, loop, stop rule, contracts) is in the spec doc
 "Objective Interview & Strategy Picture — Spec".
@@ -59,44 +59,12 @@ hold no state: pass the session, picture and any open `PendingQuestion`s back in
 | `advisor.resolve(picture, pending, answer)` | `(new picture, Advice)`; never escalates again | extract, advise |
 | `render_brief(picture)` | Markdown brief for agents | none |
 
-## Tools for the workflow (Sergei, Kyrill)
+## Tools for the workflow
 
-Each tool takes one Pydantic model as arguments and returns something JSON-serialisable:
-
-```python
-# e.g. memory_store/tools.py
-from pydantic import BaseModel
-from orchestration import tool
-
-class SavePicture(BaseModel):
-    project_id: str
-    picture: dict
-
-@tool("save_picture", "Store the strategy picture of a project.", SavePicture)
-def save_picture(args: SavePicture) -> dict:
-    ...
-    return {"ok": True}
-```
-
-Then add the module path (`"memory_store.tools"`) to `TOOL_MODULES` in
-`orchestration/tools.py`. The caller side uses the Gemini Interactions API:
-
-```python
-from orchestration import load_tools
-
-box = load_tools()
-interaction = client.interactions.create(model=..., input=brief, tools=box.declarations())
-# For every step with type == "function_call":
-results = [box.call(step) for step in interaction.steps if step.type == "function_call"]
-interaction = client.interactions.create(
-    model=..., input=results, tools=box.declarations(),
-    previous_interaction_id=interaction.id,
-)
-```
-
-`box.call` validates the arguments and returns a `function_result` step. Errors such as
-bad arguments, an unknown tool, or an exception in the tool go back to the model as
-`is_error`, so they never crash the workflow.
+Teammates expose their work as MCP tools, and the planner calls them:
+`python -m taskgraph.mcp_server` serves the task graph (create tasks, relations,
+decisions) and memory (`get_context`, `recall`, `remember`, ...). See
+`../taskgraph/API.md` and `../memory/API.md`.
 
 ## Try it in a terminal
 
@@ -113,7 +81,8 @@ python -m pytest              # or: python -m unittest discover -s tests -t .
 python -m strategy_interview.evals --runs 3 --out eval_report.json   # real Gemini
 ```
 
-The 65 tests use a scripted fake model and need no network. The evaluation lets
+Our 61 tests (`test_advisor`, `test_interview`, `test_llm_and_brief`,
+`test_scoring_merge_defaults`) use a scripted fake model and need no network. The evaluation lets
 Gemini play three owners (hobby, research, product) and checks the targets from the
 spec: median ≤ 5 questions, 0 implementation questions, project type always right,
 leans within ±1 at least 80% of the time, at least 80% of agent uncertainties answered
@@ -148,15 +117,13 @@ strategy_interview/
   advisor.py     StrategyAdvisor (ask_strategy)
   brief.py       render_brief
   evals.py       persona evaluation
-orchestration/
-  tools.py       Tool, Toolbox, @tool, TOOL_MODULES, load_tools
 examples/        research and hobby pictures with their briefs
 tests/           offline tests with a scripted fake model
 ```
 
 ## Known limits
 
-- `GeminiLLM` and the tool-call loop above follow the current Gemini docs
+- `GeminiLLM` follows the current Gemini docs
   (`client.interactions.create`). They are covered by tests against fakes but were not
   run against the live API here; run the terminal demo once with your key to confirm.
 - One owner per project. Team projects with several owners are an open decision.

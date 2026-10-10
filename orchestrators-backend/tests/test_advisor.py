@@ -13,7 +13,7 @@ from strategy_interview.defaults import apply_type_defaults
 from strategy_interview.llm_io import AdviceDraft, ExtractionResult, GuardVerdict
 from strategy_interview.merge import Proposal, apply
 
-from .fakes import FakeLLM, extraction, item
+from fakes import FakeLLM, extraction, item
 
 
 def research_picture() -> StrategyPicture:

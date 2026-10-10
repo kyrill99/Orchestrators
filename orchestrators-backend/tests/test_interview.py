@@ -14,7 +14,7 @@ from strategy_interview import (
 from strategy_interview.llm_io import ExtractionResult, GuardVerdict, QuestionDraft
 from strategy_interview.schema import Axis
 
-from .fakes import FakeLLM, extraction, item
+from fakes import FakeLLM, extraction, item
 
 RICH_ANSWER = (
     "I want to evaluate our chunking algorithm for my thesis. Success is beating the "

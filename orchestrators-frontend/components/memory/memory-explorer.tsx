@@ -1,40 +1,60 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { FileText, Folder, Search } from "lucide-react";
-import { memoryTree, type MemoryFile } from "@/lib/fixtures";
+import { memoryTree, type MemoryFile, type MemoryFolder } from "@/lib/fixtures";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+
+const scopeLabel = {
+  project: "Project",
+  user: "Owner",
+  global: "Orchestrator",
+} as const;
+
 export function MemoryExplorer() {
+  // Fixtures until the backend answers; they stay if it is unreachable.
+  const [tree, setTree] = useState<MemoryFolder[]>(memoryTree);
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState<string>(
     memoryTree[0]?.files[0]?.id ?? "",
   );
 
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch(`${API_URL}/api/memory/tree`, { signal: controller.signal })
+      .then((res) => (res.ok ? res.json() : Promise.reject(res.status)))
+      .then((data: MemoryFolder[]) => setTree(data))
+      .catch(() => {});
+    return () => controller.abort();
+  }, []);
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return memoryTree;
-    return memoryTree
+    if (!q) return tree;
+    return tree
       .map((folder) => ({
         ...folder,
         files: folder.files.filter(
           (file) =>
             file.name.toLowerCase().includes(q) ||
-            file.path.toLowerCase().includes(q),
+            file.path.toLowerCase().includes(q) ||
+            file.content.toLowerCase().includes(q),
         ),
       }))
       .filter((folder) => folder.files.length > 0);
-  }, [query]);
+  }, [query, tree]);
 
   const selected: MemoryFile | undefined = useMemo(() => {
-    for (const folder of memoryTree) {
+    for (const folder of tree) {
       const file = folder.files.find((f) => f.id === selectedId);
       if (file) return file;
     }
     return filtered[0]?.files[0];
-  }, [selectedId, filtered]);
+  }, [selectedId, filtered, tree]);
 
   return (
     <div className="flex h-full overflow-hidden">
@@ -99,6 +119,13 @@ export function MemoryExplorer() {
             <h1 className="mb-6 text-xl font-semibold tracking-[-0.02em] text-foreground">
               {selected.name.replace(/\.md$/, "")}
             </h1>
+            {selected.scope ? (
+              <p className="-mt-4 mb-6 text-xs text-muted-foreground">
+                {scopeLabel[selected.scope]} · {selected.kind} · confidence{" "}
+                {Math.round((selected.confidence ?? 0) * 100)}% · used{" "}
+                {selected.uses ?? 0}×
+              </p>
+            ) : null}
             <div className="space-y-3 text-[15px] leading-relaxed text-foreground/90">
               {selected.content
                 .trim()

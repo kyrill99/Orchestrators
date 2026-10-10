@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import Literal
 
 from dotenv import load_dotenv
@@ -11,6 +12,12 @@ from pydantic import BaseModel, Field
 from services.agent import chat as agent_chat
 from services.gradium import create_browser_token
 
+from memory import MarkdownMemoryStore, MemoryService
+from memory.api import build_router as build_memory_router
+from memory.distill import GeminiDistiller
+from taskgraph import JsonlEventStore, TaskGraphService
+from taskgraph.api import build_router
+
 load_dotenv()
 
 MODEL = "gemini-3.8-flash"
@@ -20,20 +27,24 @@ app = FastAPI(
     description="Backend for agentic project orchestration",
     version="0.1.0",
 )
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://localhost:3001",
-        "http://127.0.0.1:3001",
-    ],
-    allow_credentials=True,
+    allow_origins=os.environ.get("CORS_ORIGINS", "http://localhost:3000").split(","),
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+
+taskgraph = TaskGraphService(
+    JsonlEventStore(os.environ.get("TASKGRAPH_PATH", "data/taskgraph.jsonl"))
+)
+app.include_router(build_router(taskgraph))
+
+memory = MemoryService(
+    MarkdownMemoryStore(os.environ.get("MEMORY_PATH", "data/memory")),
+    GeminiDistiller(MODEL) if os.environ.get("GEMINI_API_KEY") else None,
+)
+app.include_router(build_memory_router(memory, taskgraph))
 
 class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1)
