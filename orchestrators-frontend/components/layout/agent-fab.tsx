@@ -1,29 +1,36 @@
 "use client";
 
-import { usePathname } from "next/navigation";
-import { MousePointer2 } from "lucide-react";
+import { History, MousePointer2 } from "lucide-react";
 import { useAgentDrawer } from "@/components/layout/agent-drawer-context";
 import { cn } from "@/lib/utils";
 
+/** Shell chrome control — sits in the grey frame, not a floating FAB. */
 export function AgentFab() {
-  const pathname = usePathname();
   const { open, toggle } = useAgentDrawer();
 
-  // Full Agent page is open — FAB stays as a quick affordance for the drawer.
   return (
-    <button
-      type="button"
-      onClick={toggle}
-      className={cn(
-        "fixed right-4 bottom-4 z-40 inline-flex h-9 items-center gap-2 rounded-full border border-border bg-background px-3.5 text-[13px] font-medium text-foreground shadow-[0_2px_8px_rgba(0,0,0,0.08)] transition-[box-shadow,transform,background-color] hover:bg-accent",
-        open && "bg-accent shadow-[0_2px_12px_rgba(0,0,0,0.12)]",
-        pathname.startsWith("/agent") && !open && "opacity-90",
-      )}
-      aria-expanded={open}
-      aria-label="Open agent"
-    >
-      <MousePointer2 className="size-3.5" strokeWidth={1.75} />
-      Agent
-    </button>
+    <div className="flex items-center gap-0.5">
+      <button
+        type="button"
+        onClick={toggle}
+        className={cn(
+          "inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-[12px] font-medium text-muted-foreground transition-colors hover:bg-black/5 hover:text-foreground",
+          open && "bg-black/5 text-foreground",
+        )}
+        aria-expanded={open}
+        aria-label="Open agent"
+      >
+        <MousePointer2 className="size-3.5" strokeWidth={1.75} />
+        Agent
+      </button>
+      <button
+        type="button"
+        className="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-black/5 hover:text-foreground"
+        aria-label="Agent history"
+        disabled
+      >
+        <History className="size-3.5" strokeWidth={1.75} />
+      </button>
+    </div>
   );
 }
