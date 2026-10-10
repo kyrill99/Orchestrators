@@ -90,7 +90,11 @@ API docs (when the FastAPI app is running): [http://localhost:8000/docs](http://
 | `GET` | `/api/me/state` | All of the user's stored values, `{key: value}` |
 | `GET` / `PUT` / `DELETE` | `/api/me/state/{key}` | One per-user JSON value (PUT body is any JSON, max 64 KB; keys `A-Za-z0-9_.:-`, max 128 chars) |
 | `POST` | `/api/voice/token` | Mint a short-lived Gradium WebSocket token (STT/TTS) |
-| `POST` | `/api/agent/chat` | Strategy agent reply via Gemini (`message`, optional `previous_interaction_id`) |
+| `GET` | `/api/conversations` | Everyone's agent conversations, newest activity first (participants, last message, thinking) |
+| `POST` | `/api/conversations` | Create a conversation (`title?`, `mode?`) |
+| `GET` | `/api/conversations/{id}` | One conversation with its messages |
+| `POST` | `/api/conversations/{id}/messages` | Post a message (`content`, `mode`, `hidden?`); stores it, asks the agent (Gemini) and returns `{message, reply}` |
+| `GET` | `/api/conversations/stream` | Server-Sent Events: `conversation`, `message`, `thinking`, `resync` (supports `Last-Event-ID`) |
 
 Voice flow: the browser asks for a token, opens Gradium STT/TTS WebSockets with `?token=...`, streams mic audio into the agent textbox, then speaks the agent reply with TTS. The Gradium API key never leaves the server.
 
@@ -98,7 +102,7 @@ Voice flow: the browser asks for a token, opens Gradium STT/TTS WebSockets with 
 
 - **REST** (GUI): `/api/memory`, `/api/taskgraph` — see [memory/API.md](memory/API.md) and [taskgraph/API.md](taskgraph/API.md).
 - **MCP** (external planners): `python -m taskgraph.mcp_server` (task graph + memory tools on one stdio server), or `python -m memory.mcp_server` alone.
-- **Interview chat** (`POST /api/agent/chat`): uses the **same tool names in-process** via Gemini function calling against the shared `MemoryService` / `TaskGraphService` instances (no MCP stdio from the API process). Bind project/owner with `MEMORY_PROJECT_ID` / `MEMORY_USER_ID` (default `default`).
+- **Interview chat** (`POST /api/conversations/{id}/messages`): uses the **same tool names in-process** via Gemini function calling against the shared `MemoryService` / `TaskGraphService` instances (no MCP stdio from the API process). Bind project/owner with `MEMORY_PROJECT_ID` / `MEMORY_USER_ID` (default `default`).
 
 ## Layout
 
@@ -108,6 +112,8 @@ orchestrators-backend/
   db.py              # shared SQLite helper
   storage.py         # backend factory, import, backup CLI
   userstate.py       # /api/me and per-user state
+  conversations.py   # shared agent conversations (SQLite) with live updates
+  events.py          # in-process pub/sub + SSE helper (heartbeats, Last-Event-ID)
   services/
     gradium.py       # Gradium browser token minting
     agent.py         # Gemini strategy chat + tool loop

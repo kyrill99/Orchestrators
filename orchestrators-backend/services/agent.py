@@ -6,6 +6,7 @@ import json
 import logging
 import os
 from collections import Counter
+from collections.abc import Callable
 from typing import Any, Literal
 
 from fastapi import HTTPException
@@ -179,8 +180,13 @@ def chat(
     *,
     previous_interaction_id: str | None = None,
     mode: Mode = "text",
+    on_tool: Callable[[str, dict[str, Any], Any], None] | None = None,
 ) -> dict[str, Any]:
-    """Send a user message and return the agent reply + interaction id."""
+    """Send a user message and return the agent reply + interaction id.
+
+    on_tool(name, arguments, result) is called after each tool call, e.g. to
+    show it live in a shared conversation.
+    """
     text = message.strip()
     if not text:
         raise HTTPException(status_code=400, detail="message is required")
@@ -225,7 +231,10 @@ def chat(
         results: list[dict[str, Any]] = []
         for step in calls:
             name = getattr(step, "name", None) or ""
-            payload = _tools.dispatch(name, _call_args(step))
+            args = _call_args(step)
+            payload = _tools.dispatch(name, args)
+            if on_tool is not None:
+                on_tool(name, args, payload)
             results.append(
                 {
                     "type": "function_result",
