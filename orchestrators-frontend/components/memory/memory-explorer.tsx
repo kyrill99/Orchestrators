@@ -6,6 +6,7 @@ import { memoryTree, type MemoryFile, type MemoryFolder } from "@/lib/fixtures";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
+import { projectFetch } from "@/lib/project-scope";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -25,7 +26,7 @@ export function MemoryExplorer() {
 
   useEffect(() => {
     const controller = new AbortController();
-    fetch(`${API_URL}/api/memory/tree`, { signal: controller.signal })
+    projectFetch(`${API_URL}/api/memory/tree`, { signal: controller.signal })
       .then((res) => (res.ok ? res.json() : Promise.reject(res.status)))
       .then((data: MemoryFolder[]) => setTree(data))
       .catch(() => {});

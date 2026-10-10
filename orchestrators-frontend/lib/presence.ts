@@ -2,7 +2,11 @@
 
 import { useEffect, useMemo, useSyncExternalStore } from "react";
 import { apiBaseUrl, fetchMe } from "@/lib/api";
-import { DEFAULT_PROJECT_ID, getCurrentProjectId } from "@/lib/projects";
+import {
+  DEFAULT_PROJECT_ID,
+  getCurrentProjectId,
+  projectFetch,
+} from "@/lib/project-scope";
 
 /**
  * Ephemeral teammate presence (see orchestrators-backend/presence.py).
@@ -79,7 +83,7 @@ function rebuild() {
 async function send(): Promise<void> {
   if (typeof document !== "undefined" && document.hidden) return;
   try {
-    const response = await fetch(`${apiBaseUrl()}/api/presence`, {
+    const response = await projectFetch(`${apiBaseUrl()}/api/presence`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

@@ -4,6 +4,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { apiBaseUrl, type AgentRun } from "@/lib/api";
+import {
+  getCurrentProjectId,
+  projectFetch,
+  projectPath,
+} from "@/lib/project-scope";
 import type { Task, TaskEdge, TaskStatus } from "@/lib/fixtures";
 import { layoutGraph, mapApiTask, type ApiTask } from "@/lib/taskgraph-api";
 import { cn } from "@/lib/utils";
@@ -93,7 +98,7 @@ function useLiveGraph() {
       clearTimeout(timer);
       let graph: BackendGraph | null = null;
       try {
-        const response = await fetch(`${apiBaseUrl()}/api/taskgraph/graph`);
+        const response = await projectFetch(`${apiBaseUrl()}/api/taskgraph/graph`);
         if (response.ok) graph = await response.json();
       } catch {
         graph = null;
@@ -196,7 +201,7 @@ export function MiniGraph() {
     // Same as the project graph view: no fixtures, just a quiet empty state.
     return (
       <Link
-        href="/project"
+        href={projectPath(getCurrentProjectId(), "/project")}
         className="flex h-[118px] flex-col items-center justify-center gap-1 rounded-lg border border-dashed border-sidebar-border text-[11px] text-muted-foreground transition-colors hover:border-foreground/15 hover:text-foreground"
       >
         <span className="flex gap-1.5" aria-hidden>
@@ -228,9 +233,11 @@ export function MiniGraph() {
           ? `Task graph, ${runningCount} agents running. Open project`
           : "Task graph. Open project"
       }
-      onClick={() => router.push("/project")}
+      onClick={() => router.push(projectPath(getCurrentProjectId(), "/project"))}
       onKeyDown={(event) => {
-        if (event.key === "Enter") router.push("/project");
+        if (event.key === "Enter") {
+          router.push(projectPath(getCurrentProjectId(), "/project"));
+        }
       }}
       className={cn(
         "relative cursor-pointer overflow-visible rounded-lg border bg-background/60 transition-[border-color,box-shadow] duration-500",
@@ -293,7 +300,12 @@ export function MiniGraph() {
               onMouseLeave={() => setHovered((h) => (h === id ? null : h))}
               onClick={(event) => {
                 event.stopPropagation();
-                router.push(`/tasks/${encodeURIComponent(id)}`);
+                router.push(
+                  projectPath(
+                    getCurrentProjectId(),
+                    `/tasks/${encodeURIComponent(id)}`,
+                  ),
+                );
               }}
             >
               {selector ? (

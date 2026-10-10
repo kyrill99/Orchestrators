@@ -1,10 +1,20 @@
 import { ApiError, apiBaseUrl } from "@/lib/api";
+import {
+  pagePath,
+  projectFetch,
+  projectPath,
+  rememberProject,
+} from "@/lib/project-scope";
+
+export {
+  DEFAULT_PROJECT_ID,
+  getCurrentProjectId,
+} from "@/lib/project-scope";
 
 /**
  * Projects: each has its own task graph and a brief (description) that the
- * planner and task agents receive. The active project is the `orch_project`
- * cookie, sent with every same-origin request, so all other API calls are
- * project-scoped automatically.
+ * planner and task agents receive. The current project is in the URL
+ * (`/p/<id>/…`, see lib/project-scope.ts); API calls carry it explicitly.
  */
 
 export type Project = {
@@ -17,11 +27,8 @@ export type Project = {
   viewers: string[];
 };
 
-export const DEFAULT_PROJECT_ID = "default";
-const COOKIE_NAME = "orch_project";
-
 async function projectRequest<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${apiBaseUrl()}${path}`, {
+  const response = await projectFetch(`${apiBaseUrl()}${path}`, {
     ...init,
     headers: init?.body ? { "Content-Type": "application/json" } : undefined,
   });
@@ -82,29 +89,15 @@ export async function updateProject(
   });
 }
 
-/** The active project id from the cookie ("default" when unset / on the server). */
-export function getCurrentProjectId(): string {
-  if (typeof document === "undefined") return DEFAULT_PROJECT_ID;
-  const parts = document.cookie ? document.cookie.split(";") : [];
-  for (const part of parts) {
-    const eq = part.indexOf("=");
-    if (eq < 0) continue;
-    const key = part.slice(0, eq).trim();
-    if (key !== COOKIE_NAME) continue;
-    const raw = part.slice(eq + 1).trim();
-    try {
-      const value = decodeURIComponent(raw);
-      return value || DEFAULT_PROJECT_ID;
-    } catch {
-      return raw || DEFAULT_PROJECT_ID;
-    }
-  }
-  return DEFAULT_PROJECT_ID;
-}
-
-/** Make `id` the active project and reload so every view refetches. */
+/**
+ * Open project `id` on the same kind of page (agent and memory stay; the
+ * project graph, a task or a global page go to the project graph). A full page
+ * load, so sockets and presence start over in the new project.
+ */
 export function switchProject(id: string): void {
-  if (typeof document === "undefined") return;
-  document.cookie = `${COOKIE_NAME}=${encodeURIComponent(id)}; path=/; max-age=31536000; samesite=lax`;
-  window.location.assign("/project");
+  if (typeof window === "undefined") return;
+  const page = pagePath(window.location.pathname);
+  const target = ["/agent", "/memory"].find((p) => page.startsWith(p)) ?? "/project";
+  rememberProject(id);
+  window.location.assign(projectPath(id, target));
 }

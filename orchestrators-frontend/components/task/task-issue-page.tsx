@@ -24,12 +24,15 @@ import { HereLine, TypingLine } from "@/components/presence/presence";
 import { notifyTyping, useAnnouncePresence } from "@/lib/presence";
 import { ContainerCursors } from "@/components/multiplayer/cursors";
 import { useChannel } from "@/components/multiplayer/provider";
+import { projectPath } from "@/lib/project-scope";
+import { useProjectId } from "@/lib/use-project";
 
 type FeedItem = { kind: "activity"; at: string; activity: TaskActivity };
 
 const STATUSES: TaskStatus[] = ["open", "running", "in-review", "closed"];
 
 export function TaskIssuePage({ id }: { id: string }) {
+  const projectId = useProjectId();
   const [task, setTask] = useState<Task | null>(null);
   const [related, setRelated] = useState<Task[]>([]);
   const [blockers, setBlockers] = useState<Task[]>([]);
@@ -151,7 +154,7 @@ export function TaskIssuePage({ id }: { id: string }) {
           .
         </p>
         <Link
-          href="/project"
+          href={projectPath(projectId, "/project")}
           className="inline-flex items-center gap-1.5 text-xs font-medium text-foreground underline-offset-4 hover:underline"
         >
           <ArrowLeft className="size-3.5" />
@@ -180,7 +183,7 @@ export function TaskIssuePage({ id }: { id: string }) {
       >
         <div className="mx-auto max-w-3xl px-6 py-7 sm:px-10">
           <Link
-            href="/project"
+            href={projectPath(projectId, "/project")}
             className="mb-5 inline-flex items-center gap-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
           >
             <ArrowLeft className="size-3.5" />
@@ -220,7 +223,7 @@ export function TaskIssuePage({ id }: { id: string }) {
                 setEditing(false);
                 setVersion((v) => v + 1);
               }}
-              onDeleted={() => window.location.assign("/project")}
+              onDeleted={() => window.location.assign(projectPath(projectId, "/project"))}
             />
           ) : (
             <div className="flex items-start gap-2">
@@ -346,7 +349,7 @@ export function TaskIssuePage({ id }: { id: string }) {
               {blockers.map((item) => (
                 <li key={item.id}>
                   <Link
-                    href={`/tasks/${item.id}`}
+                    href={projectPath(projectId, `/tasks/${item.id}`)}
                     className="flex items-center gap-2 rounded-md px-2 py-1.5 text-[13px] hover:bg-accent/60"
                   >
                     <Ban className="size-3.5 text-muted-foreground" />
@@ -357,7 +360,7 @@ export function TaskIssuePage({ id }: { id: string }) {
               {related.map((item) => (
                 <li key={item.id}>
                   <Link
-                    href={`/tasks/${item.id}`}
+                    href={projectPath(projectId, `/tasks/${item.id}`)}
                     className="flex items-center gap-2 rounded-md px-2 py-1.5 text-[13px] hover:bg-accent/60"
                   >
                     <User className="size-3.5 text-muted-foreground" />

@@ -1,6 +1,7 @@
 "use client";
 
 import { apiBaseUrl } from "@/lib/api";
+import { withProjectQuery } from "@/lib/project-scope";
 
 /**
  * Live run events from GET /api/events?channel=runs (backend events.py):
@@ -20,7 +21,7 @@ let source: EventSource | null = null;
 
 function open() {
   if (source || typeof window === "undefined") return;
-  source = new EventSource(`${apiBaseUrl()}/api/events?channel=runs`);
+  source = new EventSource(withProjectQuery(`${apiBaseUrl()}/api/events?channel=runs`));
   for (const type of ["step", "scratchpad", "resync"] as const) {
     source.addEventListener(type, (e) => {
       let data = null;

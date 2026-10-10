@@ -11,6 +11,8 @@ import { AssigneeAvatar } from "@/components/task/assignee-picker";
 import { StatusIcon } from "@/components/task/status-icon";
 import { AvatarStack } from "@/components/presence/presence";
 import { presenceColor, useTaskPresence } from "@/lib/presence";
+import { projectPath } from "@/lib/project-scope";
+import { useProjectId } from "@/lib/use-project";
 
 const DAY_MS = 86_400_000;
 const MIN_DAY_WIDTH = 36;
@@ -188,6 +190,7 @@ function cubicAt(p0: Pt, p1: Pt, p2: Pt, p3: Pt, t: number): Pt {
 }
 
 export function TimelineView() {
+  const projectId = useProjectId();
   const scrollerRef = useRef<HTMLDivElement>(null);
   const todayRef = useRef<HTMLDivElement>(null);
   const [viewportWidth, setViewportWidth] = useState(0);
@@ -503,7 +506,7 @@ export function TimelineView() {
                     style={{ height: ROW_HEIGHT }}
                   >
                     <Link
-                      href={`/tasks/${task.id}`}
+                      href={projectPath(projectId, `/tasks/${task.id}`)}
                       className={cn(
                         "absolute z-[2] flex h-9 items-center gap-2 rounded-full bg-neutral-100 py-0 pr-2.5 pl-2.5 text-left text-foreground transition-[box-shadow,transform] hover:-translate-y-px hover:shadow-md",
                         statusAccent[task.status],

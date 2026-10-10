@@ -12,7 +12,7 @@ is where.
 - The brief is injected into the planner's opening context and every worker prompt.
 - Presence shows which project each teammate has open.
 - Bug reports (screenshot / bug button) land as tasks in the **Orchestrators** project.
-- Every existing API keeps working unchanged (no per-call-site changes).
+- Every existing API keeps working unchanged; the project travels with the request.
 
 Non-goals (for now): permissions per project, moving tasks between projects,
 deleting projects.
@@ -23,7 +23,7 @@ Memory has three scopes (see `orchestrators-backend/memory/API.md`):
 
 | scope | shared with | follows |
 |---|---|---|
-| `project` | nobody outside the project | the active project (same cookie / contextvar as the task graph) |
+| `project` | nobody outside the project | the active project (same request project / contextvar as the task graph) |
 | `user` | all projects of that person | the signed-in user |
 | `global` | all projects, everyone | nothing; one shared set |
 
@@ -36,23 +36,37 @@ existed sit under `projects/default` and stay with the default project.
 ## How the active project travels
 
 ```
-browser ── cookie orch_project=<id> ──▶ oauth2-proxy ──▶ FastAPI
-                                                         │ ProjectMiddleware (ASGI)
-                                                         │   sets contextvar current_project
-                                                         ▼
+URL /p/<id>/… ── X-Orch-Project: <id> (fetch) ──▶ oauth2-proxy ──▶ FastAPI
+               └─ ?project=<id> (EventSource, WS)                 │ ProjectMiddleware (ASGI)
+                                                                  │   sets contextvar current_project
+                                                                  ▼
                         routers / AgentTools / loop ──▶ ScopedProxy ──▶ ProjectGraphs[id]
                                                                          ├─ TaskGraphService
                                                                          └─ RunManager (+ runner)
 ```
 
-- The frontend stores the active project in the cookie `orch_project` (default
-  `default`). Browsers send it with every same-origin request, including
-  `EventSource` streams, so no fetch call needs to change. Switching sets the
-  cookie and reloads.
-- `ProjectMiddleware` (pure ASGI) reads the cookie, falls back to `default` for
-  unknown ids, and sets the `current_project` context variable for the request.
-  Starlette's threadpool and asyncio tasks copy context, so sync endpoints and
-  agent tool calls see it too.
+- The URL is the source of truth: project-scoped pages live under
+  `/p/<projectId>/` (`agent`, `project`, `tasks/<id>`, `memory`), so a project
+  view is shareable, bookmarkable and survives reloads and back/forward. Issues
+  are global and stay at `/issues`.
+- `lib/project-scope.ts` reads the project from `window.location`. Project-scoped
+  fetches go through `projectFetch` (header `X-Orch-Project`); EventSource and
+  WebSocket URLs get `?project=<id>` (`withProjectQuery`), since they cannot set
+  headers. Presence heartbeats and the multiplayer socket follow the URL that way,
+  and two tabs on different projects never mix.
+- The cookie `orch_project` only remembers the **last-used** project. Next.js
+  redirects (`next.config.ts`) send `/`, `/agent`, `/project`, `/tasks/<id>` and
+  `/memory` to `/p/<last-used or default>/…`; global pages and calls without a
+  project fall back to it.
+- Switching projects (top bar or sidebar list) opens the same kind of page in the other
+  project (agent and memory stay, everything else goes to the project graph) with a
+  full page load. A client-side navigation into another project (back/forward,
+  a link) also reloads (`components/layout/project-scope.tsx`), because sockets,
+  presence and the side nav are set up per page load.
+- `ProjectMiddleware` (pure ASGI) takes the header, else the `project` query
+  parameter, else the cookie; unknown ids fall back to `default`. It sets the
+  `current_project` context variable for the request. Starlette's threadpool and
+  asyncio tasks copy context, so sync endpoints and agent tool calls see it too.
 - `ScopedProxy` objects stand in for the task graph service and the run manager
   everywhere they were passed before (`build_router`, `AgentTools`, memory router).
   Each attribute access resolves to the current project's instance, so a request
@@ -87,11 +101,11 @@ Seeded on first start: `default` (the existing graph) and `orchestrators`
 | | |
 |---|---|
 | `GET /api/projects` | `[{id, name, description, createdBy, createdAt, viewers[]}]`; `viewers` = emails whose presence heartbeat is in that project |
-| `GET /api/projects/current` | the project selected by the cookie |
+| `GET /api/projects/current` | the request's project (header, query or cookie) |
 | `POST /api/projects` `{name, description}` | create (id = slug of the name), 201 |
 | `PATCH /api/projects/{id}` `{name?, description?}` | edit the brief |
 
-Presence entries gain `project` (set server-side from the cookie); the frontend
+Presence entries gain `project` (set server-side from the request's project); the frontend
 only shows teammates in the same project.
 
 ## Bug reports
@@ -120,4 +134,4 @@ Conversations belong to a project (`conversations.project`, added by migration; 
 are `default`). `GET /api/conversations` lists only the current project's; live
 `conversation` events carry `project` and the frontend ignores other projects'. When a
 message is posted, the planner runs in the **conversation's** project (not the poster's
-cookie), so its tools, board summary and project brief always match that chat.
+current one), so its tools, board summary and project brief always match that chat.

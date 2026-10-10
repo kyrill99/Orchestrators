@@ -1,5 +1,6 @@
 import { useCallback, useSyncExternalStore } from "react";
 import { apiBaseUrl, GUI_ACTOR, type Actor } from "@/lib/api";
+import { projectFetch } from "@/lib/project-scope";
 
 export type AssigneeId =
   | "lorenz"
@@ -149,7 +150,7 @@ export function syncAssigneeFromBackend(
 
 /** Assign the task in the backend (task.assign op as the GUI actor). */
 export async function persistAssignee(taskId: string, id: AssigneeId): Promise<void> {
-  const response = await fetch(`${apiBaseUrl()}/api/taskgraph/changes`, {
+  const response = await projectFetch(`${apiBaseUrl()}/api/taskgraph/changes`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({

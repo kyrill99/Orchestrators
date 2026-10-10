@@ -6,9 +6,10 @@ import { EngineToggle } from "@/components/layout/engine-toggle";
 import { fetchTask, fetchTaskGraph } from "@/lib/taskgraph-api";
 import { ProjectSwitcher } from "@/components/layout/project-switcher";
 import { OnlineAvatars } from "@/components/multiplayer/online-avatars";
+import { pagePath } from "@/lib/project-scope";
 
 export function TopBar() {
-  const pathname = usePathname();
+  const pathname = pagePath(usePathname());
   const [projectName, setProjectName] = useState("Project");
   const [taskTitle, setTaskTitle] = useState<string | null>(null);
 

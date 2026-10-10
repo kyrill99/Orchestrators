@@ -1,5 +1,6 @@
 import { apiBaseUrl, GUI_ACTOR, type Actor } from "@/lib/api";
 import { syncAssigneeFromBackend } from "@/lib/assignees";
+import { projectFetch } from "@/lib/project-scope";
 import type { Task, TaskActivity, TaskEdge, TaskKind, TaskStatus } from "@/lib/fixtures";
 
 export type GraphProject = {
@@ -78,7 +79,7 @@ export function mapApiTask(raw: ApiTask): Task {
 }
 
 export async function fetchTaskGraph(): Promise<TaskGraphSnapshot> {
-  const response = await fetch(`${apiBaseUrl()}/api/taskgraph/graph`, {
+  const response = await projectFetch(`${apiBaseUrl()}/api/taskgraph/graph`, {
     cache: "no-store",
   });
   if (!response.ok) {
@@ -106,7 +107,7 @@ export async function fetchTaskGraph(): Promise<TaskGraphSnapshot> {
 }
 
 export async function fetchTask(id: string): Promise<Task | null> {
-  const response = await fetch(`${apiBaseUrl()}/api/taskgraph/tasks/${encodeURIComponent(id)}`, {
+  const response = await projectFetch(`${apiBaseUrl()}/api/taskgraph/tasks/${encodeURIComponent(id)}`, {
     cache: "no-store",
   });
   if (response.status === 404) return null;
@@ -124,7 +125,7 @@ export async function setTaskStatus(
   status: TaskStatus,
   reason = "Updated status from the GUI",
 ): Promise<void> {
-  const response = await fetch(`${apiBaseUrl()}/api/taskgraph/changes`, {
+  const response = await projectFetch(`${apiBaseUrl()}/api/taskgraph/changes`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -149,7 +150,7 @@ export type TaskOp = Record<string, unknown> & { op: string };
 
 /** Submit a batch of task graph ops (atomic: all or nothing). */
 export async function submitTaskOps(ops: TaskOp[], reason: string): Promise<void> {
-  const response = await fetch(`${apiBaseUrl()}/api/taskgraph/changes`, {
+  const response = await projectFetch(`${apiBaseUrl()}/api/taskgraph/changes`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ actor: GUI_ACTOR, reason, ops }),

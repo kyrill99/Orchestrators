@@ -10,25 +10,29 @@ import {
   MousePointer2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { pagePath, projectPath } from "@/lib/project-scope";
+import { useProjectId } from "@/lib/use-project";
 import { MiniGraph } from "@/components/layout/mini-graph";
 import { ProjectList } from "@/components/layout/project-list";
 import { SystemStats } from "@/components/layout/system-stats";
 import { UpdateControl } from "@/components/layout/update-control";
 
+// Agent, Project and Memory are per project (/p/<id>/…); issues are global.
 const items = [
-  { href: "/agent", label: "Agent", icon: MousePointer2 },
-  { href: "/project", label: "Project", icon: Box },
-  { href: "/memory", label: "Memory", icon: Brain },
-  { href: "/issues", label: "Issues", icon: Bug },
+  { href: "/agent", label: "Agent", icon: MousePointer2, scoped: true },
+  { href: "/project", label: "Project", icon: Box, scoped: true },
+  { href: "/memory", label: "Memory", icon: Brain, scoped: true },
+  { href: "/issues", label: "Issues", icon: Bug, scoped: false },
 ] as const;
 
 export function SideNav() {
-  const pathname = usePathname();
+  const pathname = pagePath(usePathname());
+  const projectId = useProjectId();
 
   return (
     <aside className="flex w-[220px] shrink-0 flex-col bg-shell px-3 py-3 text-sidebar-foreground">
       <Link
-        href="/agent"
+        href={projectPath(projectId, "/agent")}
         className="mb-4 flex items-center gap-2 rounded-md px-1.5 py-1 transition-colors hover:bg-sidebar-accent"
       >
         <span className="flex size-5 items-center justify-center rounded-full bg-foreground text-[10px] font-semibold text-background">
@@ -44,7 +48,7 @@ export function SideNav() {
       <ProjectList />
 
       <nav className="flex flex-col gap-0.5">
-        {items.map(({ href, label, icon: Icon }) => {
+        {items.map(({ href, label, icon: Icon, scoped }) => {
           const active =
             pathname === href ||
             (href === "/project" && pathname.startsWith("/tasks"));
@@ -52,7 +56,7 @@ export function SideNav() {
           return (
             <Link
               key={href}
-              href={href}
+              href={scoped ? projectPath(projectId, href) : href}
               className={cn(
                 "flex items-center gap-2 rounded-md px-2 py-1.5 text-[13px] transition-colors",
                 active

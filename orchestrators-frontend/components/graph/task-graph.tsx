@@ -20,6 +20,7 @@ import { layoutGraph } from "@/lib/taskgraph-api";
 import { useTaskGraph } from "@/lib/use-task-graph";
 import { setSelection } from "@/lib/presence";
 import { FlowMultiplayer } from "@/components/multiplayer/cursors";
+import { getCurrentProjectId, projectPath } from "@/lib/project-scope";
 
 export function TaskGraph() {
   const router = useRouter();
@@ -134,7 +135,9 @@ export function TaskGraph() {
 
   const onNodeClick: NodeMouseHandler = useCallback(
     (_event, node) => {
-      router.push(`/tasks/${node.id}`);
+      router.push(
+        projectPath(getCurrentProjectId(), `/tasks/${encodeURIComponent(node.id)}`),
+      );
     },
     [router],
   );

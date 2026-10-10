@@ -1,6 +1,6 @@
 import { apiBaseUrl } from "@/lib/api";
 import { applyPresence, type PresenceEntry } from "@/lib/presence";
-import { getCurrentProjectId } from "@/lib/projects";
+import { getCurrentProjectId, withProjectQuery } from "@/lib/project-scope";
 
 /** Rooms are per project: "<project>/<location>" on the wire. */
 function scoped(location: string): string {
@@ -165,7 +165,9 @@ export class MultiplayerClient {
     }
     let opened = false;
     const base = apiBaseUrl() || window.location.origin;
-    const ws = new WebSocket(`${base.replace(/^http/, "ws")}/api/multiplayer/ws`);
+    const ws = new WebSocket(
+      withProjectQuery(`${base.replace(/^http/, "ws")}/api/multiplayer/ws`),
+    );
     this.ws = ws;
     ws.onopen = () => {
       opened = true;
@@ -194,7 +196,7 @@ export class MultiplayerClient {
     const query = [...this.channels.keys()]
       .map((c) => `channel=${encodeURIComponent(c)}`)
       .join("&");
-    const source = new EventSource(`${apiBaseUrl()}/api/events?${query}`);
+    const source = new EventSource(withProjectQuery(`${apiBaseUrl()}/api/events?${query}`));
     this.source = source;
     source.onopen = () => {
       this.set({ mode: "sse" });

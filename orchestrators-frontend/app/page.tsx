@@ -1,4 +1,4 @@
-/** Canonical entry is `/agent` via `next.config` redirect. */
+/** Redirected to `/p/<last-used project>/agent` in `next.config.ts`. */
 export default function HomePage() {
   return null;
 }

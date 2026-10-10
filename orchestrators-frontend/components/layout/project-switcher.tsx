@@ -10,18 +10,20 @@ import { Textarea } from "@/components/ui/textarea";
 import { presenceColor, presenceInitial } from "@/lib/presence";
 import {
   createProject,
+  DEFAULT_PROJECT_ID,
   fetchProjects,
   getCurrentProjectId,
   switchProject,
   type Project,
 } from "@/lib/projects";
+import { projectIdFromPath, projectPath } from "@/lib/project-scope";
 import { cn } from "@/lib/utils";
 
 /** Top-bar project name + dropdown to switch / create projects. */
 export function ProjectSwitcher({ fallbackName }: { fallbackName: string }) {
   const [projects, setProjects] = useState<Project[] | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
-  const [currentId, setCurrentId] = useState<string>("default");
+  const [currentId, setCurrentId] = useState<string>(DEFAULT_PROJECT_ID);
   const [open, setOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -67,13 +69,22 @@ export function ProjectSwitcher({ fallbackName }: { fallbackName: string }) {
     };
   }, [open, load]);
 
+  // A project id in the URL that does not exist: open the default project.
+  useEffect(() => {
+    if (!projects || projects.some((p) => p.id === currentId)) return;
+    if (currentId === DEFAULT_PROJECT_ID) return;
+    if (projectIdFromPath(window.location.pathname) === currentId) {
+      switchProject(DEFAULT_PROJECT_ID);
+    }
+  }, [projects, currentId]);
+
   const current = projects?.find((p) => p.id === currentId) ?? null;
   const name = current?.name || fallbackName;
 
   return (
     <div ref={rootRef} className="relative flex min-w-0 items-center">
       <Link
-        href="/project"
+        href={projectPath(currentId, "/project")}
         className="truncate font-medium text-foreground transition-opacity hover:opacity-70"
       >
         {name}

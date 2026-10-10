@@ -1,3 +1,5 @@
+import { projectFetch, withProjectQuery } from "@/lib/project-scope";
+
 const DEFAULT_API_URL = "http://localhost:8000";
 
 export function apiBaseUrl(): string {
@@ -16,7 +18,7 @@ export type GradiumToken = {
 };
 
 export async function fetchGradiumToken(): Promise<GradiumToken> {
-  const response = await fetch(`${apiBaseUrl()}/api/voice/token`, {
+  const response = await projectFetch(`${apiBaseUrl()}/api/voice/token`, {
     method: "POST",
   });
   if (!response.ok) {
@@ -81,7 +83,7 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${apiBaseUrl()}${path}`, {
+  const response = await projectFetch(`${apiBaseUrl()}${path}`, {
     ...init,
     headers: init?.body ? { "Content-Type": "application/json" } : undefined,
   });
@@ -134,7 +136,7 @@ export type TaskRunState =
 export async function fetchTaskRun(taskId: string): Promise<TaskRunState> {
   let response: Response;
   try {
-    response = await fetch(
+    response = await projectFetch(
       `${apiBaseUrl()}/api/taskgraph/tasks/${encodeURIComponent(taskId)}`,
     );
   } catch {
@@ -150,7 +152,7 @@ export async function controlTaskRun(
   taskId: string,
   action: "start" | "stop" | "restart",
 ): Promise<AgentRun> {
-  const response = await fetch(
+  const response = await projectFetch(
     `${apiBaseUrl()}/api/taskgraph/tasks/${encodeURIComponent(taskId)}/run/${action}`,
     {
       method: "POST",
@@ -168,7 +170,7 @@ export async function controlTaskRun(
 /** Runs in progress across the graph (empty if the backend is unreachable). */
 export async function fetchActiveRuns(): Promise<AgentRun[]> {
   try {
-    const response = await fetch(`${apiBaseUrl()}/api/taskgraph/graph`);
+    const response = await projectFetch(`${apiBaseUrl()}/api/taskgraph/graph`);
     if (!response.ok) return [];
     return (await response.json()).activeRuns ?? [];
   } catch {
@@ -215,7 +217,7 @@ export function postConversationMessage(
 
 /** Server-Sent Events: conversation, message, thinking, resync. */
 export function conversationStreamUrl(): string {
-  return `${apiBaseUrl()}/api/conversations/stream`;
+  return withProjectQuery(`${apiBaseUrl()}/api/conversations/stream`);
 }
 
 // ---- Agent runs: steps, scratchpad, engine ----------------------------------

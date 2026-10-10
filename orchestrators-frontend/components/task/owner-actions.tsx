@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Check, HelpCircle, Undo2 } from "lucide-react";
 import { apiBaseUrl, GUI_ACTOR } from "@/lib/api";
+import { projectFetch } from "@/lib/project-scope";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 
@@ -18,7 +19,7 @@ type Decision = {
 type LiveTask = { status: string; decision?: Decision | null };
 
 async function post(path: string, body: unknown) {
-  const res = await fetch(`${apiBaseUrl()}/api/taskgraph${path}`, {
+  const res = await projectFetch(`${apiBaseUrl()}/api/taskgraph${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -43,7 +44,7 @@ export function OwnerActions({ taskId }: { taskId: string }) {
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(() => {
-    fetch(`${apiBaseUrl()}/api/taskgraph/tasks/${encodeURIComponent(taskId)}`)
+    projectFetch(`${apiBaseUrl()}/api/taskgraph/tasks/${encodeURIComponent(taskId)}`)
       .then((r) => (r.ok ? r.json() : null))
       .then((t) => setTask(t))
       .catch(() => setTask(null));
