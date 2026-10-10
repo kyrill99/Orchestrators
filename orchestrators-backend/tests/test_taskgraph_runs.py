@@ -243,7 +243,7 @@ class McpRunToolsTest(unittest.TestCase):
             await call("stop_task", {"task_id": "s", "reason": "not needed yet"})
             run = await call("restart_task", {"task_id": "r", "reason": "retry", "instructions": "cite sources"})
             self.assertEqual(run["attempt"], 2)
-            await call("finish_run", {"run_id": run["id"], "outcome": "succeeded", "note": "done"})
+            await call("finish_run", {"run_id": run["id"], "outcome": "succeeded", "summary": "done"})
             self.assertEqual(svc.task("r")["status"], "in-review")
             self.assertEqual(await call("list_active_runs", {}), [])
             self.assertEqual(len(await call("list_runs", {"task_id": "r"})), 2)

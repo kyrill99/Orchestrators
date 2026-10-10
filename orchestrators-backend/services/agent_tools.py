@@ -1,17 +1,38 @@
-"""In-process memory + taskgraph tools for the interview agent.
+"""One tool table for every agent that works on memory and the task graph.
 
-Same vocabulary as the MCP servers (`memory.mcp_server`, `taskgraph.mcp_server`),
-but called directly from FastAPI against the shared service instances — no stdio.
+Each tool is a plain Python function with type hints and a docstring, built
+over a `ToolContext` (the shared service instances plus the acting agent).
+The same `ToolDef` is used by
+
+- the interview chat agent (`AgentTools(...).declarations()` / `.dispatch()`),
+- the in-process Gemini worker that executes task runs (`worker_tools`),
+- the planner's MCP server (`register_mcp(server, planner_tools(ctx))`), where
+  the MCP SDK derives the schema from the same signature.
+
+Gemini function declarations come from the signature too (pydantic JSON
+schema, refs inlined), so a tool is written once. Tool functions raise
+`TaskGraphError` / `MemoryServiceError`; `dispatch` turns those into
+`{"error": ...}` for the model and the MCP adapter into `ToolError`. `bind`
+derives a narrower tool (fixed or defaulted arguments, fewer parameters) for
+the worker instead of a copy-pasted variant.
+
+Tool sets: `interview_tools` (memory + graph reads/writes, + issues), `planner_tools`
+(graph + run control + scratchpad + engine) and `worker_tools` (one task).
 """
 
 from __future__ import annotations
 
 import copy
+import dataclasses
+import functools
+import inspect
 import json
 import os
-from typing import Any
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Literal
 
-from pydantic import TypeAdapter, ValidationError
+from pydantic import BaseModel, ValidationError, create_model
 
 from issues import IssueError, IssueService, agent_author
 from memory.models import MemorySource
@@ -20,475 +41,762 @@ from taskgraph.models import (
     Actor,
     AddComment,
     AddRelation,
+    Artifact,
     AssignTask,
+    ChangesetStatus,
     CreateTask,
     DeleteTask,
     Op,
     RemoveRelation,
     RequestDecision,
     ResolveDecision,
+    RunStatus,
     SetStatus,
+    TaskStatus,
     UpdateTask,
 )
 from taskgraph.service import TaskGraphError, TaskGraphService
 
-OpsAdapter = TypeAdapter(list[Op])
+if TYPE_CHECKING:
+    from taskgraph.engine import Engine
+    from taskgraph.runlog import RunLog, Scratchpads
+    from taskgraph.runs import RunManager
 
-# Gemini Interactions function declarations (mirror MCP tool names).
-TOOL_DECLARATIONS: list[dict[str, Any]] = [
-    {
-        "type": "function",
-        "name": "get_context",
-        "description": (
-            "Everything memory knows that applies now: project strategy, owner "
-            "preferences, orchestrator lessons, plus entries matching query."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "description": "Optional focus query"},
-            },
-        },
-    },
-    {
-        "type": "function",
-        "name": "recall",
-        "description": "Search memory. Use before asking the owner a question.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string"},
-                "kind": {
-                    "type": "string",
-                    "enum": ["strategy", "preference", "decision", "learning", "note"],
-                },
-                "limit": {"type": "integer"},
-            },
-            "required": ["query"],
-        },
-    },
-    {
-        "type": "function",
-        "name": "remember",
-        "description": (
-            "Store something worth knowing next session. scope 'project' for this "
-            "project, 'user' for an owner preference across projects, 'global' for "
-            "a lesson about orchestrating. Same title updates."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "title": {"type": "string"},
-                "body": {"type": "string"},
-                "kind": {
-                    "type": "string",
-                    "enum": ["strategy", "preference", "decision", "learning", "note"],
-                },
-                "scope": {"type": "string", "enum": ["project", "user", "global"]},
-                "tags": {"type": "array", "items": {"type": "string"}},
-            },
-            "required": ["title", "body", "kind"],
-        },
-    },
-    {
-        "type": "function",
-        "name": "memory_feedback",
-        "description": (
-            "Report whether a memory held up. Not helpful lowers confidence; "
-            "repeated, it is archived."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "memory_id": {"type": "string"},
-                "helpful": {"type": "boolean"},
-                "note": {"type": "string"},
-            },
-            "required": ["memory_id", "helpful"],
-        },
-    },
-    {
-        "type": "function",
-        "name": "list_memories",
-        "description": "List active memories, optionally by scope or kind.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "scope": {"type": "string", "enum": ["project", "user", "global"]},
-                "kind": {
-                    "type": "string",
-                    "enum": ["strategy", "preference", "decision", "learning", "note"],
-                },
-            },
-        },
-    },
-    {
-        "type": "function",
-        "name": "get_graph",
-        "description": "Whole project: settings, tasks, edges, pending decisions/changesets.",
-        "parameters": {"type": "object", "properties": {}},
-    },
-    {
-        "type": "function",
-        "name": "get_task",
-        "description": "One task with its activity feed, dependents and children.",
-        "parameters": {
-            "type": "object",
-            "properties": {"task_id": {"type": "string"}},
-            "required": ["task_id"],
-        },
-    },
-    {
-        "type": "function",
-        "name": "ready_tasks",
-        "description": "Open tasks whose blockers are all closed (can be started now).",
-        "parameters": {"type": "object", "properties": {}},
-    },
-    {
-        "type": "function",
-        "name": "blocked_tasks",
-        "description": "Unfinished tasks and what they are waiting on.",
-        "parameters": {"type": "object", "properties": {}},
-    },
-    {
-        "type": "function",
-        "name": "list_decisions",
-        "description": "Decision log: questions, choices and rationale.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "state": {"type": "string", "enum": ["pending", "resolved"]},
-            },
-        },
-    },
-    {
-        "type": "function",
-        "name": "list_activity",
-        "description": "Activity feed, optionally for one task, after event seq since.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "task_id": {"type": "string"},
-                "since": {"type": "integer"},
-                "limit": {"type": "integer"},
-            },
-        },
-    },
-    {
-        "type": "function",
-        "name": "apply_changes",
-        "description": (
-            "Apply a batch of ops atomically (all or nothing). Later ops may "
-            "reference tasks created earlier in the batch by their id. Every change "
-            "needs a reason."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "ops": {"type": "array", "items": {"type": "object"}},
-                "reason": {"type": "string"},
-            },
-            "required": ["ops", "reason"],
-        },
-    },
-    {
-        "type": "function",
-        "name": "create_task",
-        "description": "Create a task. blocked_by lists tasks that must close first.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "title": {"type": "string"},
-                "reason": {"type": "string"},
-                "id": {"type": "string"},
-                "kind": {"type": "string", "enum": ["start", "task", "decision", "end"]},
-                "description": {"type": "string"},
-                "blocked_by": {"type": "array", "items": {"type": "string"}},
-                "parent_id": {"type": "string"},
-                "start_date": {"type": "string"},
-                "end_date": {"type": "string"},
-            },
-            "required": ["title", "reason"],
-        },
-    },
-    {
-        "type": "function",
-        "name": "update_task",
-        "description": (
-            "Update fields: title, kind, description, parentId, startDate, endDate, "
-            "progress, artifacts."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "task_id": {"type": "string"},
-                "fields": {"type": "object"},
-                "reason": {"type": "string"},
-            },
-            "required": ["task_id", "fields", "reason"],
-        },
-    },
-    {
-        "type": "function",
-        "name": "set_status",
-        "description": "Move a task: open | running | in-review | closed.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "task_id": {"type": "string"},
-                "status": {
-                    "type": "string",
-                    "enum": ["open", "running", "in-review", "closed"],
-                },
-                "reason": {"type": "string"},
-            },
-            "required": ["task_id", "status", "reason"],
-        },
-    },
-    {
-        "type": "function",
-        "name": "assign_task",
-        "description": "Assign to a human or agent; omit assignee to unassign.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "task_id": {"type": "string"},
-                "reason": {"type": "string"},
-                "assignee_type": {"type": "string", "enum": ["human", "agent"]},
-                "assignee_id": {"type": "string"},
-            },
-            "required": ["task_id", "reason"],
-        },
-    },
-    {
-        "type": "function",
-        "name": "delete_task",
-        "description": "Delete a task and its relations.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "task_id": {"type": "string"},
-                "reason": {"type": "string"},
-            },
-            "required": ["task_id", "reason"],
-        },
-    },
-    {
-        "type": "function",
-        "name": "add_relation",
-        "description": "blocks: source must close before target can start. Cycles are rejected.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "source": {"type": "string"},
-                "target": {"type": "string"},
-                "reason": {"type": "string"},
-                "type": {"type": "string", "enum": ["blocks", "related"]},
-            },
-            "required": ["source", "target", "reason"],
-        },
-    },
-    {
-        "type": "function",
-        "name": "remove_relation",
-        "description": "Remove a relation.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "source": {"type": "string"},
-                "target": {"type": "string"},
-                "reason": {"type": "string"},
-                "type": {"type": "string", "enum": ["blocks", "related"]},
-            },
-            "required": ["source", "target", "reason"],
-        },
-    },
-    {
-        "type": "function",
-        "name": "add_comment",
-        "description": "Post to a task's activity feed (progress notes, findings).",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "task_id": {"type": "string"},
-                "body": {"type": "string"},
-                "reason": {"type": "string"},
-            },
-            "required": ["task_id", "body"],
-        },
-    },
-    {
-        "type": "function",
-        "name": "request_decision",
-        "description": "Ask the human a STRATEGY question on a (decision) task.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "task_id": {"type": "string"},
-                "question": {"type": "string"},
-                "reason": {"type": "string"},
-                "options": {"type": "array", "items": {"type": "string"}},
-                "context": {"type": "string"},
-            },
-            "required": ["task_id", "question", "reason"],
-        },
-    },
-    {
-        "type": "function",
-        "name": "resolve_decision",
-        "description": "Record a decision you made yourself, with the rationale.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "task_id": {"type": "string"},
-                "chosen": {"type": "string"},
-                "rationale": {"type": "string"},
-            },
-            "required": ["task_id", "chosen", "rationale"],
-        },
-    },
-]
-
-# Issue tools (same names as issues.register_mcp_tools). Offered only when
-# AgentTools has an IssueService.
-ISSUE_TOOL_DECLARATIONS: list[dict[str, Any]] = [
-    {
-        "type": "function",
-        "name": "list_issues",
-        "description": (
-            "Issues (bug reports, requests), newest first. status: comma-separated "
-            "draft/open/in_progress/closed or 'all' (default: everything published). "
-            "search matches title, description or #number."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "status": {"type": "string"},
-                "search": {"type": "string"},
-                "author": {"type": "string", "description": "Author email"},
-                "assignee": {"type": "string"},
-                "label": {"type": "string"},
-                "limit": {"type": "integer"},
-            },
-        },
-    },
-    {
-        "type": "function",
-        "name": "get_issue",
-        "description": (
-            "One issue (id or number like '#12') with description, comments and "
-            "screenshot metadata (url, path)."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {"issue": {"type": "string"}},
-            "required": ["issue"],
-        },
-    },
-    {
-        "type": "function",
-        "name": "create_issue",
-        "description": "File a new (open) issue, e.g. a bug found while working.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "title": {"type": "string"},
-                "description": {"type": "string"},
-                "labels": {"type": "array", "items": {"type": "string"}},
-                "assignee": {"type": "string"},
-            },
-            "required": ["title"],
-        },
-    },
-    {
-        "type": "function",
-        "name": "update_issue",
-        "description": (
-            "Change an issue's title, description, labels or assignee ('' unassigns, "
-            "'agent:<id>' or an email), or move it between open and in_progress."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "issue": {"type": "string"},
-                "title": {"type": "string"},
-                "description": {"type": "string"},
-                "status": {"type": "string", "enum": ["open", "in_progress"]},
-                "labels": {"type": "array", "items": {"type": "string"}},
-                "assignee": {"type": "string"},
-            },
-            "required": ["issue"],
-        },
-    },
-    {
-        "type": "function",
-        "name": "comment_on_issue",
-        "description": "Add a comment (markdown) to an issue: progress, findings, questions.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "issue": {"type": "string"},
-                "body": {"type": "string"},
-            },
-            "required": ["issue", "body"],
-        },
-    },
-    {
-        "type": "function",
-        "name": "close_issue",
-        "description": "Close an issue, saying why (fixed, duplicate of #3, won't fix...).",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "issue": {"type": "string"},
-                "reason": {"type": "string"},
-            },
-            "required": ["issue", "reason"],
-        },
-    },
-    {
-        "type": "function",
-        "name": "reopen_issue",
-        "description": "Reopen a closed issue.",
-        "parameters": {
-            "type": "object",
-            "properties": {"issue": {"type": "string"}},
-            "required": ["issue"],
-        },
-    },
-]
-ISSUE_TOOL_NAMES = {t["name"] for t in ISSUE_TOOL_DECLARATIONS}
+MemoryKind = Literal["strategy", "preference", "decision", "learning", "note"]
+Scope = Literal["project", "user", "global"]
 
 
-def _dump(out: Any) -> Any:
+# --------------------------------------------------------------------------
+# ToolDef
+# --------------------------------------------------------------------------
+
+
+@dataclass
+class ToolDef:
+    """A named function plus how to describe and call it."""
+
+    name: str
+    fn: Callable[..., Any]
+    description: str
+    # Set by `bind`: arguments filled in (hidden from the model), changed
+    # defaults, and the parameters to expose (None: all).
+    fixed: dict[str, Any] = field(default_factory=dict)
+    defaults: dict[str, Any] = field(default_factory=dict)
+    only: tuple[str, ...] | None = None
+    # Hand-written parameter schema when the derived one is too big for Gemini.
+    schema_override: dict[str, Any] | None = None
+
+    def parameters(self) -> list[inspect.Parameter]:
+        sig = inspect.signature(self.fn, eval_str=True)
+        out = []
+        for p in sig.parameters.values():
+            if p.name in self.fixed or (self.only is not None and p.name not in self.only):
+                continue
+            if p.name in self.defaults:
+                p = p.replace(default=self.defaults[p.name])
+            out.append(p)
+        return out
+
+    @functools.cached_property
+    def args_model(self) -> type[BaseModel]:
+        fields: dict[str, Any] = {}
+        for p in self.parameters():
+            ann = p.annotation if p.annotation is not inspect.Parameter.empty else Any
+            fields[p.name] = (ann, ... if p.default is inspect.Parameter.empty else p.default)
+        return create_model(f"{self.name}_args", **fields)
+
+    def schema(self) -> dict[str, Any]:
+        """JSON schema of the arguments (refs inlined, `X | None` collapsed to X)."""
+        if self.schema_override is not None:
+            return self.schema_override
+        return clean_schema(self.args_model.model_json_schema())
+
+    def declaration(self) -> dict[str, Any]:
+        """Function declaration for the Gemini Interactions API."""
+        return {"type": "function", "name": self.name, "description": self.description,
+                "parameters": self.schema()}
+
+    def call(self, args: dict[str, Any] | None) -> Any:
+        """Validate `args` against the signature and call the tool (raises on errors)."""
+        try:
+            parsed = self.args_model.model_validate(args or {})
+        except ValidationError as e:
+            raise TaskGraphError("invalid", _short_validation(e)) from None
+        kwargs = {k: getattr(parsed, k) for k in type(parsed).model_fields}
+        return dump(self.fn(**self.fixed, **kwargs))
+
+
+def tool(fn: Callable[..., Any], **kw: Any) -> ToolDef:
+    return ToolDef(name=fn.__name__, fn=fn, description=inspect.cleandoc(fn.__doc__ or ""), **kw)
+
+
+def bind(
+    t: ToolDef,
+    *,
+    name: str | None = None,
+    description: str | None = None,
+    fixed: dict[str, Any] | None = None,
+    defaults: dict[str, Any] | None = None,
+    only: Iterable[str] | None = None,
+) -> ToolDef:
+    """A narrower variant of `t`: `fixed` args are filled in and hidden,
+    `defaults` make args optional, `only` keeps just those parameters (the
+    rest use their defaults)."""
+    return ToolDef(
+        name=name or t.name,
+        fn=t.fn,
+        description=description or t.description,
+        fixed={**t.fixed, **(fixed or {})},
+        defaults={**t.defaults, **(defaults or {})},
+        only=tuple(only) if only is not None else t.only,
+    )
+
+
+def dump(out: Any) -> Any:
     if isinstance(out, list):
-        return [_dump(item) for item in out]
-    if hasattr(out, "dump"):
-        return out.dump()
-    return out
+        return [dump(o) for o in out]
+    return out.dump() if hasattr(out, "dump") else out
+
+
+def _short_validation(e: ValidationError) -> str:
+    parts = []
+    for err in e.errors()[:5]:
+        loc = ".".join(str(x) for x in err["loc"]) or "arguments"
+        parts.append(f"{loc}: {err['msg']}")
+    return "; ".join(parts)
+
+
+def clean_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Inline $refs, drop titles and null defaults, collapse `X | None` to X."""
+    defs = schema.pop("$defs", {})
+
+    def walk(node: Any) -> Any:
+        if isinstance(node, list):
+            return [walk(n) for n in node]
+        if not isinstance(node, dict):
+            return node
+        if "$ref" in node:
+            target = defs[node["$ref"].split("/")[-1]]
+            return walk({**target, **{k: v for k, v in node.items() if k != "$ref"}})
+        out = {k: walk(v) for k, v in node.items() if k not in ("title", "properties")}
+        if isinstance(node.get("properties"), dict):  # property names may be "title"
+            out["properties"] = {k: walk(v) for k, v in node["properties"].items()}
+        any_of = out.get("anyOf")
+        if isinstance(any_of, list):
+            non_null = [s for s in any_of if s.get("type") != "null"]
+            if len(non_null) == 1 and len(non_null) < len(any_of):
+                out.pop("anyOf")
+                out = {**non_null[0], **out}
+        if "default" in out and out["default"] is None:
+            out.pop("default")
+        return out
+
+    return walk(schema)
+
+
+def result_as_text(result: Any, limit: int | None = None) -> str:
+    """Serialize a tool result for Gemini function_result steps."""
+    if isinstance(result, str):
+        text = result
+    else:
+        try:
+            text = json.dumps(result, default=str, ensure_ascii=False)
+        except TypeError:
+            text = str(result)
+    if limit is not None and len(text) > limit:
+        text = text[:limit] + f"… [{len(text) - limit} more characters]"
+    return text
+
+
+# --------------------------------------------------------------------------
+# Context
+# --------------------------------------------------------------------------
+
+
+@dataclass
+class ToolContext:
+    """The services the tools act on, and who is acting. Optional services
+    (runs, scratchpads, ...) are only needed by the tools that use them."""
+
+    taskgraph: TaskGraphService | None
+    actor: Actor
+    memory: MemoryService | None = None
+    runs: RunManager | None = None
+    scratchpads: Scratchpads | None = None
+    runlog: RunLog | None = None
+    engine: Engine | None = None
+    issues: IssueService | None = None
+    project_id: str = DEFAULT_ID
+    user_id: str = DEFAULT_ID
+
+    def need(self, what: str) -> Any:
+        value = getattr(self, what)
+        if value is None:
+            raise TaskGraphError("invalid", f"{what} is not available here")
+        return value
+
+    @property
+    def tg(self) -> TaskGraphService:
+        return self.need("taskgraph")
+
+    def submit(self, ops: list[Op], reason: str) -> Any:
+        return self.tg.submit(self.actor, ops, reason)
+
+
+# --------------------------------------------------------------------------
+# Memory
+# --------------------------------------------------------------------------
+
+
+def memory_tools(ctx: ToolContext) -> list[ToolDef]:
+    def mem() -> MemoryService:
+        return ctx.need("memory")
+
+    def get_context(query: str | None = None) -> dict:
+        """Everything memory knows that applies now: project strategy, owner
+        preferences, orchestrator lessons, plus entries matching query."""
+        return mem().context(project_id=ctx.project_id, user_id=ctx.user_id, query=query)
+
+    def recall(query: str, kind: MemoryKind | None = None, limit: int = 5) -> list[dict]:
+        """Search memory. Use before asking the owner a question."""
+        return mem().search(query, project_id=ctx.project_id, user_id=ctx.user_id,
+                            kind=kind, limit=limit)
+
+    def remember(
+        title: str, body: str, kind: MemoryKind, scope: Scope = "project", tags: list[str] | None = None
+    ) -> dict:
+        """Store something worth knowing next session. scope 'project' for this
+        project, 'user' for an owner preference across projects, 'global' for
+        a lesson about orchestrating. Same title updates."""
+        return mem().remember(
+            ctx.actor, title=title, body=body, kind=kind, scope=scope,
+            project_id=ctx.project_id, user_id=ctx.user_id, tags=tags or [],
+            source=MemorySource(type="conversation"),
+        )
+
+    def memory_feedback(memory_id: str, helpful: bool, note: str | None = None) -> dict:
+        """Report whether a memory held up. Not helpful lowers confidence;
+        repeated, it is archived."""
+        return mem().feedback(ctx.actor, memory_id, helpful, note)
+
+    def list_memories(scope: Scope | None = None, kind: MemoryKind | None = None) -> list[dict]:
+        """List active memories, optionally by scope or kind."""
+        return mem().list_memories(scope=scope, kind=kind, project_id=ctx.project_id,
+                                   user_id=ctx.user_id)
+
+    return [tool(f) for f in (get_context, recall, remember, memory_feedback, list_memories)]
+
+
+# --------------------------------------------------------------------------
+# Graph reads
+# --------------------------------------------------------------------------
+
+
+def graph_read_tools(ctx: ToolContext) -> list[ToolDef]:
+    def get_graph() -> dict:
+        """Whole project: settings, tasks, edges, pending decisions/changesets, active runs."""
+        return ctx.tg.graph()
+
+    def get_task(task_id: str) -> dict:
+        """One task with its activity feed (comments, changes), dependents, children and active run."""
+        return ctx.tg.task(task_id)
+
+    def ready_tasks() -> list[dict]:
+        """Open tasks whose blockers are all closed (can be started now)."""
+        return ctx.tg.ready()
+
+    def blocked_tasks() -> list[dict]:
+        """Unfinished tasks and what they are waiting on."""
+        return ctx.tg.blocked()
+
+    def list_decisions(state: Literal["pending", "resolved"] | None = None) -> list[dict]:
+        """Decision log: questions, choices and rationale."""
+        return ctx.tg.decisions(state)
+
+    def list_activity(task_id: str | None = None, since: int = 0, limit: int = 50) -> list[dict]:
+        """Activity feed, optionally for one task, after event seq `since`."""
+        return ctx.tg.activity(task_id, since=since, limit=limit)
+
+    def list_changesets(status: ChangesetStatus | None = None) -> list[dict]:
+        """Changesets (batches of changes): applied, proposed (awaiting human review) or rejected."""
+        return ctx.tg.changesets(status)
+
+    def get_events(since: int = 0, limit: int = 100) -> list[dict]:
+        """Raw event log after seq `since` (every change, run start/stop, review)."""
+        return ctx.tg.events_since(since, limit)
+
+    return [tool(f) for f in (get_graph, get_task, ready_tasks, blocked_tasks, list_decisions,
+                              list_activity, list_changesets, get_events)]
+
+
+# --------------------------------------------------------------------------
+# Graph writes
+# --------------------------------------------------------------------------
+
+# list[Op] expands to a large discriminated union; Gemini gets a plain array.
+_APPLY_CHANGES_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "ops": {"type": "array", "items": {"type": "object"},
+                "description": "Ops like {op: 'task.create', id, title, blockedBy: [...]}"},
+        "reason": {"type": "string"},
+    },
+    "required": ["ops", "reason"],
+}
+
+
+def graph_write_tools(ctx: ToolContext) -> list[ToolDef]:
+    def apply_changes(ops: list[Op], reason: str) -> dict:
+        """Apply a batch of ops atomically (all or nothing). Later ops may
+        reference tasks created earlier in the batch by their id. Every change
+        needs a reason."""
+        return ctx.submit(ops, reason)
+
+    def create_task(
+        title: str,
+        reason: str,
+        id: str | None = None,
+        kind: Literal["start", "task", "decision", "end"] = "task",
+        description: str = "",
+        blocked_by: list[str] | None = None,
+        parent_id: str | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
+    ) -> dict:
+        """Create a task. blocked_by lists tasks that must close first."""
+        try:
+            op = CreateTask(
+                id=id, title=title, kind=kind, description=description,
+                blocked_by=blocked_by or [], parent_id=parent_id,
+                start_date=start_date, end_date=end_date,
+            )
+        except ValidationError as e:
+            raise TaskGraphError("invalid", _short_validation(e)) from None
+        return ctx.submit([op], reason)
+
+    def update_task(task_id: str, fields: dict, reason: str) -> dict:
+        """Update fields: title, kind, description, parentId, startDate, endDate, progress, artifacts."""
+        try:
+            op = UpdateTask(task_id=task_id, **fields)
+        except (ValidationError, TypeError) as e:
+            raise TaskGraphError("invalid", str(e)) from None
+        return ctx.submit([op], reason)
+
+    def update_task_fields(
+        task_id: str,
+        reason: str,
+        title: str | None = None,
+        description: str | None = None,
+        progress: float | None = None,
+        artifacts: list[Artifact] | None = None,
+        add_artifacts: list[Artifact] | None = None,
+    ) -> dict:
+        """Update a task's title, description, progress (0 to 1) or artifacts.
+        `artifacts` replaces the list, `add_artifacts` appends to it; omitted
+        fields stay as they are."""
+        fields: dict[str, Any] = {
+            k: v for k, v in (("title", title), ("description", description), ("progress", progress))
+            if v is not None
+        }
+        if artifacts is not None:
+            fields["artifacts"] = artifacts
+        if add_artifacts:
+            current = fields.get("artifacts") or [
+                Artifact.model_validate(a) for a in ctx.tg.task(task_id)["artifacts"]
+            ]
+            fields["artifacts"] = [*current, *add_artifacts]
+        if not fields:
+            raise TaskGraphError("invalid", "nothing to update")
+        try:
+            op = UpdateTask(task_id=task_id, **fields)
+        except ValidationError as e:
+            raise TaskGraphError("invalid", _short_validation(e)) from None
+        return ctx.submit([op], reason)
+
+    def set_status(task_id: str, status: TaskStatus, reason: str) -> dict:
+        """Move a task: open | running | in-review | closed (blockers must be closed)."""
+        return ctx.submit([SetStatus(task_id=task_id, status=status)], reason)
+
+    def assign_task(
+        task_id: str,
+        reason: str,
+        assignee_type: Literal["human", "agent"] | None = None,
+        assignee_id: str | None = None,
+    ) -> dict:
+        """Assign to a human or agent; omit assignee to unassign."""
+        who = Actor(type=assignee_type, id=assignee_id) if assignee_type and assignee_id else None
+        return ctx.submit([AssignTask(task_id=task_id, assignee=who)], reason)
+
+    def delete_task(task_id: str, reason: str) -> dict:
+        """Delete a task and its relations."""
+        return ctx.submit([DeleteTask(task_id=task_id)], reason)
+
+    def add_relation(
+        source: str, target: str, reason: str, type: Literal["blocks", "related"] = "blocks"
+    ) -> dict:
+        """'blocks': source must close before target can start. Cycles are rejected."""
+        return ctx.submit([AddRelation(source=source, target=target, type=type)], reason)
+
+    def remove_relation(
+        source: str, target: str, reason: str, type: Literal["blocks", "related"] = "blocks"
+    ) -> dict:
+        """Remove a relation."""
+        return ctx.submit([RemoveRelation(source=source, target=target, type=type)], reason)
+
+    def add_comment(task_id: str, body: str, reason: str = "comment") -> dict:
+        """Post to a task's activity feed (progress notes, findings)."""
+        if not body.strip():
+            raise TaskGraphError("invalid", "comment body is empty")
+        return ctx.submit([AddComment(task_id=task_id, body=body)], reason)
+
+    def request_decision(
+        task_id: str,
+        question: str,
+        reason: str,
+        options: list[str] | None = None,
+        context: str | None = None,
+    ) -> dict:
+        """Ask the human a STRATEGY question (goals, priorities, success criteria) on a task."""
+        return ctx.submit(
+            [RequestDecision(task_id=task_id, question=question, options=options or [], context=context)],
+            reason,
+        )
+
+    def resolve_decision(task_id: str, chosen: str, rationale: str) -> dict:
+        """Record a decision you made yourself, with the rationale."""
+        return ctx.submit([ResolveDecision(task_id=task_id, chosen=chosen, rationale=rationale)], rationale)
+
+    return [
+        tool(apply_changes, schema_override=_APPLY_CHANGES_SCHEMA),
+        *(tool(f) for f in (create_task, update_task, update_task_fields, set_status, assign_task,
+                            delete_task, add_relation, remove_relation, add_comment,
+                            request_decision, resolve_decision)),
+    ]
+
+
+# --------------------------------------------------------------------------
+# Run control
+# --------------------------------------------------------------------------
+
+
+def run_tools(ctx: ToolContext) -> list[ToolDef]:
+    def runs() -> RunManager:
+        return ctx.need("runs")
+
+    def active_run_id(task_id: str) -> str:
+        active = ctx.tg.runs(task_id=task_id, active=True)
+        if not active:
+            ctx.tg.task(task_id)  # not_found for unknown tasks
+            raise TaskGraphError("not_found", f"'{task_id}' has no active run")
+        return active[0].id
+
+    def start_task(
+        task_id: str, reason: str, agent_id: str = "worker", instructions: str | None = None
+    ) -> dict:
+        """Put agent `agent_id` to work on a task. The task must be ready (not
+        closed, blockers closed, no pending decision, no active run); it moves
+        to 'running' and is assigned to the agent. Returns the run."""
+        return runs().start(ctx.actor, task_id, reason, agent_id=agent_id, instructions=instructions)
+
+    def stop_task(task_id: str, reason: str) -> dict:
+        """Stop the agent working on a task. The task goes back to 'open'."""
+        return runs().stop(ctx.actor, active_run_id(task_id), reason)
+
+    def restart_task(
+        task_id: str, reason: str, agent_id: str | None = None, instructions: str | None = None
+    ) -> dict:
+        """Stop the task's active run (if any) and start a new attempt. Agent and
+        instructions carry over from the last run unless you pass new ones."""
+        return runs().restart(ctx.actor, task_id, reason, agent_id=agent_id, instructions=instructions)
+
+    def start_ready_tasks(reason: str, agent_id: str = "worker", limit: int | None = None) -> list[dict]:
+        """Start runs on every ready work task (kind 'task'), up to `limit`."""
+        ready = [t["id"] for t in ctx.tg.ready() if t["kind"] == "task"]
+        started = []
+        for task_id in ready[:limit] if limit is not None else ready:
+            if not ctx.tg.runs(task_id=task_id, active=True):
+                started.append(runs().start(ctx.actor, task_id, reason, agent_id=agent_id))
+        return started
+
+    def stop_all_runs(reason: str) -> list[dict]:
+        """Stop every active run (the whole graph run)."""
+        return [runs().stop(ctx.actor, r.id, reason) for r in runs().active()]
+
+    def finish_run(run_id: str, outcome: Literal["succeeded", "failed"], summary: str) -> dict:
+        """Report how a run ended, with a short summary of what was done (or why it
+        failed). succeeded -> the task goes to 'in-review'; failed -> back to 'open'."""
+        return runs().finish(ctx.actor, run_id, outcome, summary)
+
+    def list_active_runs() -> list[dict]:
+        """Agents working right now: run id, task, agent, runner, since when."""
+        return runs().active()
+
+    def list_runs(task_id: str | None = None, status: RunStatus | None = None) -> list[dict]:
+        """Run history, optionally for one task or one status."""
+        return ctx.tg.runs(task_id=task_id, status=status)
+
+    def get_run(run_id: str) -> dict:
+        """One run: agent, status, attempt, exit code, note."""
+        return ctx.tg.run(run_id)
+
+    def get_run_steps(run_id: str, after: int = 0, limit: int = 100) -> list[dict]:
+        """What an in-process agent did during a run (messages, tool calls,
+        results, errors), after step `after`."""
+        ctx.tg.run(run_id)
+        return ctx.need("runlog").steps(run_id, after, limit)
+
+    return [tool(f) for f in (start_task, stop_task, restart_task, start_ready_tasks, stop_all_runs,
+                              finish_run, list_active_runs, list_runs, get_run, get_run_steps)]
+
+
+# --------------------------------------------------------------------------
+# Scratchpad
+# --------------------------------------------------------------------------
+
+
+def scratchpad_tools(ctx: ToolContext) -> list[ToolDef]:
+    def pads() -> Scratchpads:
+        return ctx.need("scratchpads")
+
+    def written(result: dict) -> dict:
+        return {"taskId": result["taskId"], "chars": len(result["content"]),
+                "updatedAt": result["updatedAt"]}
+
+    def read_scratchpad(task_id: str) -> dict:
+        """A task's markdown scratchpad: working notes that persist across runs."""
+        ctx.tg.task(task_id)
+        return pads().get(task_id)
+
+    def write_scratchpad(task_id: str, content: str) -> dict:
+        """Replace a task's scratchpad with `content` (markdown)."""
+        ctx.tg.task(task_id)
+        try:
+            return written(pads().write(task_id, content, ctx.actor.id))
+        except ValueError as e:
+            raise TaskGraphError("invalid", str(e)) from None
+
+    def append_scratchpad(task_id: str, text: str) -> dict:
+        """Append `text` (markdown) to the end of a task's scratchpad."""
+        ctx.tg.task(task_id)
+        try:
+            return written(pads().append(task_id, text, ctx.actor.id))
+        except ValueError as e:
+            raise TaskGraphError("invalid", str(e)) from None
+
+    return [tool(f) for f in (read_scratchpad, write_scratchpad, append_scratchpad)]
+
+
+# --------------------------------------------------------------------------
+# Engine
+# --------------------------------------------------------------------------
+
+
+def engine_tools(ctx: ToolContext) -> list[ToolDef]:
+    def engine() -> Engine:
+        return ctx.need("engine")
+
+    def engine_status() -> dict:
+        """Engine state (running/stopped), active runs, concurrency limit and the
+        queue of tasks it would start next."""
+        return engine().status()
+
+    def engine_start(reason: str) -> dict:
+        """Start the engine: it keeps starting agent runs on ready work tasks, up
+        to its concurrency limit."""
+        return engine().start(ctx.actor, reason)
+
+    def engine_stop(reason: str, stop_runs: bool = False) -> dict:
+        """Stop dispatching new runs. With stop_runs=true, also stop every active run."""
+        return engine().stop(ctx.actor, reason, stop_runs=stop_runs)
+
+    return [tool(f) for f in (engine_status, engine_start, engine_stop)]
+
+
+# --------------------------------------------------------------------------
+# Issues (bug reports, requests; issues.py). The MCP server registers
+# issues.register_mcp_tools instead, which adds get_issue_screenshot.
+# --------------------------------------------------------------------------
+
+
+def issue_tools(ctx: ToolContext) -> list[ToolDef]:
+    def svc() -> IssueService:
+        return ctx.need("issues")
+
+    def me():
+        return agent_author(ctx.actor.id)
+
+    def list_issues(
+        status: str | None = None,
+        search: str | None = None,
+        author: str | None = None,
+        assignee: str | None = None,
+        label: str | None = None,
+        limit: int = 50,
+    ) -> list[dict]:
+        """Issues (bug reports, requests), newest first. status: comma-separated
+        draft/open/in_progress/closed or 'all' (default: everything published).
+        search matches title, description or #number; author is an email."""
+        return svc().list_issues(status=status, search=search, author=author,
+                                 assignee=assignee, label=label, limit=limit)
+
+    def get_issue(issue: str) -> dict:
+        """One issue (id or number like '#12') with description, comments and
+        screenshot metadata (url, path)."""
+        out = svc().get(issue)
+        for a in out["attachments"]:
+            a["path"] = str(svc().attachment_path(a).resolve())
+        return out
+
+    def create_issue(
+        title: str, description: str = "", labels: list[str] | None = None, assignee: str | None = None
+    ) -> dict:
+        """File a new (open) issue, e.g. a bug found while working."""
+        return svc().create(me(), title=title, description=description, labels=labels, assignee=assignee)
+
+    def update_issue(
+        issue: str,
+        title: str | None = None,
+        description: str | None = None,
+        status: Literal["open", "in_progress"] | None = None,
+        labels: list[str] | None = None,
+        assignee: str | None = None,
+    ) -> dict:
+        """Change an issue's title, description, labels or assignee ('' unassigns,
+        'agent:<id>' or an email), or move it between open and in_progress."""
+        return svc().update(me(), issue, title=title, description=description, status=status,
+                            labels=labels, assignee=assignee)
+
+    def comment_on_issue(issue: str, body: str) -> dict:
+        """Add a comment (markdown) to an issue: progress, findings, questions."""
+        return svc().add_comment(me(), issue, body)
+
+    def close_issue(issue: str, reason: str) -> dict:
+        """Close an issue, saying why (fixed, duplicate of #3, won't fix...)."""
+        return svc().close(me(), issue, reason)
+
+    def reopen_issue(issue: str) -> dict:
+        """Reopen a closed issue."""
+        return svc().reopen(me(), issue)
+
+    return [tool(f) for f in (list_issues, get_issue, create_issue, update_issue,
+                              comment_on_issue, close_issue, reopen_issue)]
+
+
+# --------------------------------------------------------------------------
+# Tool sets
+# --------------------------------------------------------------------------
+
+
+def by_name(tools: Iterable[ToolDef]) -> dict[str, ToolDef]:
+    return {t.name: t for t in tools}
+
+
+INTERVIEW_TOOLS = (
+    "get_context", "recall", "remember", "memory_feedback", "list_memories",
+    "get_graph", "get_task", "ready_tasks", "blocked_tasks", "list_decisions", "list_activity",
+    "apply_changes", "create_task", "update_task", "set_status", "assign_task", "delete_task",
+    "add_relation", "remove_relation", "add_comment", "request_decision", "resolve_decision",
+)
+
+
+def interview_tools(ctx: ToolContext) -> list[ToolDef]:
+    """The strategy chat agent: memory plus graph reads and writes."""
+    t = by_name([*memory_tools(ctx), *graph_read_tools(ctx), *graph_write_tools(ctx)])
+    tools = [t[n] for n in INTERVIEW_TOOLS]
+    if ctx.issues is not None:
+        tools += issue_tools(ctx)
+    return tools
+
+
+def planner_tools(ctx: ToolContext) -> list[ToolDef]:
+    """The planner over MCP: graph, run control, scratchpads and the engine.
+    (Memory tools come from memory.mcp_server on the same server.)"""
+    return [*graph_read_tools(ctx), *graph_write_tools(ctx), *run_tools(ctx),
+            *scratchpad_tools(ctx), *engine_tools(ctx)]
+
+
+def worker_tools(ctx: ToolContext, *, run_id: str, task_id: str) -> list[ToolDef]:
+    """An agent working on `task_id` in run `run_id`: read the graph, comment,
+    update its own task, create subtasks and relations, ask a human, use
+    memory and the scratchpad, and finish its run."""
+    t = by_name([*memory_tools(ctx), *graph_read_tools(ctx), *graph_write_tools(ctx),
+                 *run_tools(ctx), *scratchpad_tools(ctx)])
+    mine = {"task_id": task_id}
+    tools = [
+        bind(t["get_task"], defaults=mine,
+             description="One task (default: yours) with its activity feed (comments, changes), "
+                         "dependents, children and active run."),
+        t["get_graph"],
+        bind(t["add_comment"], defaults=mine,
+             description="Post a progress note or finding to a task's activity feed (default: your task)."),
+        bind(t["update_task_fields"], name="update_my_task", fixed=mine,
+             only=("reason", "description", "progress", "add_artifacts"),
+             description="Update your own task: description, progress (0 to 1), or add artifacts "
+                         "({path, label}; a path can be a URL)."),
+        bind(t["create_task"], name="create_subtask", fixed={"parent_id": task_id, "kind": "task"},
+             only=("title", "reason", "description", "blocked_by", "id"),
+             description="Create a subtask of your task for follow-up work you will not do in this "
+                         "run. blocked_by lists tasks that must close first."),
+        t["add_relation"],
+        bind(t["request_decision"], defaults=mine,
+             description="Ask the human a STRATEGY question (goals, priorities, success criteria) on a "
+                         "task (default: yours). Then finish your run with outcome 'failed' and a summary "
+                         "saying you are waiting for the answer; the task can restart once it is answered."),
+        bind(t["read_scratchpad"], defaults=mine,
+             description="Read a task's markdown scratchpad (default: yours): working notes that persist "
+                         "across runs."),
+        bind(t["write_scratchpad"], fixed=mine,
+             description="Replace your task's scratchpad with `content` (markdown). Keep it a current "
+                         "summary: plan, findings, open questions, next steps."),
+        bind(t["append_scratchpad"], fixed=mine,
+             description="Append `text` (markdown) to your task's scratchpad."),
+        t["get_context"],
+        t["recall"],
+        t["remember"],
+        bind(t["finish_run"], fixed={"run_id": run_id},
+             description="End your run. outcome 'succeeded' when the task is done (it goes to human "
+                         "review), 'failed' when you cannot finish it. summary: what you did, what is "
+                         "left, where the results are. Call it exactly once, as your last action."),
+    ]
+    if ctx.memory is None:
+        tools = [x for x in tools if x.name not in ("get_context", "recall", "remember")]
+    if ctx.issues is not None:
+        tools += issue_tools(ctx)
+    return tools
+
+
+# --------------------------------------------------------------------------
+# Adapters
+# --------------------------------------------------------------------------
 
 
 class AgentTools:
-    """Dispatch Gemini function calls onto MemoryService + TaskGraphService
-    (+ IssueService when given)."""
+    """Dispatch Gemini function calls onto the services. Defaults to the
+    interview chat's tool set; pass `toolset` for another one."""
 
     def __init__(
         self,
-        memory: MemoryService,
-        taskgraph: TaskGraphService,
+        memory: MemoryService | None,
+        taskgraph: TaskGraphService | None,
         *,
         agent_id: str | None = None,
         project_id: str | None = None,
         user_id: str | None = None,
-        issues: IssueService | None = None,
+        toolset: Callable[[ToolContext], list[ToolDef]] = interview_tools,
+        **services: Any,
     ) -> None:
-        self.memory = memory
-        self.issues = issues
-        self.taskgraph = taskgraph
         self.agent_id = agent_id or os.environ.get("INTERVIEW_AGENT_ID", "interview")
-        self.project_id = project_id or os.environ.get("MEMORY_PROJECT_ID", DEFAULT_ID)
-        self.user_id = user_id or os.environ.get("MEMORY_USER_ID", DEFAULT_ID)
         self.me = Actor(type="agent", id=self.agent_id)
+        self.ctx = ToolContext(
+            taskgraph=taskgraph, actor=self.me, memory=memory,
+            project_id=project_id or os.environ.get("MEMORY_PROJECT_ID", DEFAULT_ID),
+            user_id=user_id or os.environ.get("MEMORY_USER_ID", DEFAULT_ID),
+            **services,
+        )
+        self.memory, self.taskgraph = memory, taskgraph
+        self.project_id, self.user_id = self.ctx.project_id, self.ctx.user_id
+        self.toolset = toolset
+        self.tools = by_name(toolset(self.ctx))
 
     def for_user(self, identity: str) -> AgentTools:
         """The same tools with memory bound to a signed-in user, so one owner's
@@ -498,240 +806,56 @@ class AgentTools:
             return self
         bound = copy.copy(self)
         bound.user_id = user_key(identity)
+        bound.ctx = dataclasses.replace(self.ctx, user_id=bound.user_id)
+        bound.tools = by_name(self.toolset(bound.ctx))
         return bound
 
     def memory_context(self) -> str:
         """What memory knows for this project and owner, as a prompt block."""
-        return self.memory.context(project_id=self.project_id, user_id=self.user_id)["text"]
+        return self.ctx.need("memory").context(project_id=self.project_id, user_id=self.user_id)["text"]
 
     def declarations(self) -> list[dict[str, Any]]:
-        tools = list(TOOL_DECLARATIONS)
-        if self.issues is not None:
-            tools += ISSUE_TOOL_DECLARATIONS
-        return tools
+        return [t.declaration() for t in self.tools.values()]
+
+    def call(self, name: str, arguments: dict[str, Any] | None) -> Any:
+        """Run a tool; raises TaskGraphError / MemoryServiceError."""
+        t = self.tools.get(name)
+        if t is None:
+            raise TaskGraphError("not_found", f"unknown tool: {name}")
+        return t.call(arguments)
 
     def dispatch(self, name: str, arguments: dict[str, Any] | None) -> Any:
-        args = arguments or {}
+        """Run a tool; errors come back as {"error": "..."} for the model."""
+        if name not in self.tools:
+            return {"error": f"unknown tool: {name}"}
         try:
-            return self._dispatch(name, args)
+            return self.call(name, arguments)
         except (MemoryServiceError, TaskGraphError, IssueError) as e:
-            code = getattr(e, "code", "error")
-            return {"error": f"{code}: {e}"}
+            return {"error": f"{getattr(e, 'code', 'error')}: {e}"}
         except (ValidationError, TypeError, ValueError, KeyError) as e:
             return {"error": f"invalid: {e}"}
 
-    def _run_graph(self, fn, *a, **kw) -> Any:
-        return _dump(fn(*a, **kw))
 
-    def _submit(self, ops: list[Op], reason: str) -> Any:
-        return self._run_graph(self.taskgraph.submit, self.me, ops, reason)
-
-    def _dispatch_issue(self, name: str, args: dict[str, Any]) -> Any:
-        me = agent_author(self.agent_id)
-        issues = self.issues
-        match name:
-            case "list_issues":
-                return issues.list_issues(
-                    status=args.get("status"),
-                    search=args.get("search"),
-                    author=args.get("author"),
-                    assignee=args.get("assignee"),
-                    label=args.get("label"),
-                    limit=int(args.get("limit", 50)),
-                )
-            case "get_issue":
-                issue = issues.get(args["issue"])
-                for a in issue["attachments"]:
-                    a["path"] = str(issues.attachment_path(a).resolve())
-                return issue
-            case "create_issue":
-                return issues.create(
-                    me,
-                    title=args["title"],
-                    description=args.get("description", ""),
-                    labels=args.get("labels"),
-                    assignee=args.get("assignee"),
-                )
-            case "update_issue":
-                return issues.update(
-                    me,
-                    args["issue"],
-                    title=args.get("title"),
-                    description=args.get("description"),
-                    status=args.get("status"),
-                    labels=args.get("labels"),
-                    assignee=args.get("assignee"),
-                )
-            case "comment_on_issue":
-                return issues.add_comment(me, args["issue"], args["body"])
-            case "close_issue":
-                return issues.close(me, args["issue"], args.get("reason"))
-            case "reopen_issue":
-                return issues.reopen(me, args["issue"])
-            case _:
-                return {"error": f"unknown tool: {name}"}
-
-    def _dispatch(self, name: str, args: dict[str, Any]) -> Any:
-        if self.issues is not None and name in ISSUE_TOOL_NAMES:
-            return self._dispatch_issue(name, args)
-        match name:
-            case "get_context":
-                return _dump(
-                    self.memory.context(
-                        project_id=self.project_id,
-                        user_id=self.user_id,
-                        query=args.get("query"),
-                    )
-                )
-            case "recall":
-                return _dump(
-                    self.memory.search(
-                        args["query"],
-                        project_id=self.project_id,
-                        user_id=self.user_id,
-                        kind=args.get("kind"),
-                        limit=int(args.get("limit", 5)),
-                    )
-                )
-            case "remember":
-                return _dump(
-                    self.memory.remember(
-                        self.me,
-                        title=args["title"],
-                        body=args["body"],
-                        kind=args["kind"],
-                        scope=args.get("scope", "project"),
-                        project_id=self.project_id,
-                        user_id=self.user_id,
-                        tags=args.get("tags") or [],
-                        source=MemorySource(type="conversation"),
-                    )
-                )
-            case "memory_feedback":
-                return _dump(
-                    self.memory.feedback(
-                        self.me,
-                        args["memory_id"],
-                        bool(args["helpful"]),
-                        args.get("note"),
-                    )
-                )
-            case "list_memories":
-                return _dump(
-                    self.memory.list_memories(
-                        scope=args.get("scope"),
-                        kind=args.get("kind"),
-                        project_id=self.project_id,
-                        user_id=self.user_id,
-                    )
-                )
-            case "get_graph":
-                return self._run_graph(self.taskgraph.graph)
-            case "get_task":
-                return self._run_graph(self.taskgraph.task, args["task_id"])
-            case "ready_tasks":
-                return self._run_graph(self.taskgraph.ready)
-            case "blocked_tasks":
-                return self._run_graph(self.taskgraph.blocked)
-            case "list_decisions":
-                return self._run_graph(self.taskgraph.decisions, args.get("state"))
-            case "list_activity":
-                return self._run_graph(
-                    self.taskgraph.activity,
-                    args.get("task_id"),
-                    since=int(args.get("since", 0)),
-                    limit=int(args.get("limit", 50)),
-                )
-            case "apply_changes":
-                ops = OpsAdapter.validate_python(args["ops"])
-                return self._submit(ops, args["reason"])
-            case "create_task":
-                op = CreateTask(
-                    id=args.get("id"),
-                    title=args["title"],
-                    kind=args.get("kind", "task"),
-                    description=args.get("description", ""),
-                    blocked_by=args.get("blocked_by") or [],
-                    parent_id=args.get("parent_id"),
-                    start_date=args.get("start_date"),
-                    end_date=args.get("end_date"),
-                )
-                return self._submit([op], args["reason"])
-            case "update_task":
-                op = UpdateTask(task_id=args["task_id"], **(args.get("fields") or {}))
-                return self._submit([op], args["reason"])
-            case "set_status":
-                return self._submit(
-                    [SetStatus(task_id=args["task_id"], status=args["status"])],
-                    args["reason"],
-                )
-            case "assign_task":
-                who = None
-                if args.get("assignee_type") and args.get("assignee_id"):
-                    who = Actor(type=args["assignee_type"], id=args["assignee_id"])
-                return self._submit(
-                    [AssignTask(task_id=args["task_id"], assignee=who)],
-                    args["reason"],
-                )
-            case "delete_task":
-                return self._submit([DeleteTask(task_id=args["task_id"])], args["reason"])
-            case "add_relation":
-                return self._submit(
-                    [
-                        AddRelation(
-                            source=args["source"],
-                            target=args["target"],
-                            type=args.get("type", "blocks"),
-                        )
-                    ],
-                    args["reason"],
-                )
-            case "remove_relation":
-                return self._submit(
-                    [
-                        RemoveRelation(
-                            source=args["source"],
-                            target=args["target"],
-                            type=args.get("type", "blocks"),
-                        )
-                    ],
-                    args["reason"],
-                )
-            case "add_comment":
-                return self._submit(
-                    [AddComment(task_id=args["task_id"], body=args["body"])],
-                    args.get("reason", "comment"),
-                )
-            case "request_decision":
-                return self._submit(
-                    [
-                        RequestDecision(
-                            task_id=args["task_id"],
-                            question=args["question"],
-                            options=args.get("options") or [],
-                            context=args.get("context"),
-                        )
-                    ],
-                    args["reason"],
-                )
-            case "resolve_decision":
-                return self._submit(
-                    [
-                        ResolveDecision(
-                            task_id=args["task_id"],
-                            chosen=args["chosen"],
-                            rationale=args["rationale"],
-                        )
-                    ],
-                    args["rationale"],
-                )
-            case _:
-                return {"error": f"unknown tool: {name}"}
+TOOL_DECLARATIONS: list[dict[str, Any]] = [
+    t.declaration() for t in interview_tools(ToolContext(taskgraph=None, actor=Actor(type="agent", id="x")))
+]
 
 
-def result_as_text(result: Any) -> str:
-    """Serialize a tool result for Gemini function_result steps."""
-    try:
-        return json.dumps(result, default=str)
-    except TypeError:
-        return str(result)
+def register_mcp(server: Any, tools: Iterable[ToolDef]) -> None:
+    """Register tools on an MCPServer; TaskGraphError becomes ToolError."""
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    for t in tools:
+        if t.fixed or t.defaults or t.only is not None:
+            raise ValueError(f"bound tool {t.name} cannot be registered on MCP")
+
+        def make(fn: Callable[..., Any]) -> Callable[..., Any]:
+            @functools.wraps(fn)
+            def handler(*a: Any, **kw: Any) -> Any:
+                try:
+                    return dump(fn(*a, **kw))
+                except (TaskGraphError, MemoryServiceError, IssueError) as e:
+                    raise ToolError(f"{e.code}: {e}") from None
+            return handler
+
+        server.add_tool(make(t.fn), name=t.name, description=t.description)
