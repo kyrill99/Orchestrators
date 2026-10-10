@@ -35,20 +35,33 @@ Never commit `.env`.
 ## Run
 
 ```bash
-# Dev API server (FastAPI)
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
+# Dev API server (FastAPI) — use the venv binary
+.venv/bin/uvicorn main:app --reload --host 0.0.0.0 --port 8000
 
 # Or the Gemini interactions smoke script (if using the script entrypoint)
-python main.py
+.venv/bin/python main.py
 ```
 
 API docs (when the FastAPI app is running): [http://localhost:8000/docs](http://localhost:8000/docs)
+
+## API
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/health` | Liveness |
+| `POST` | `/api/voice/token` | Mint a short-lived Gradium WebSocket token (STT/TTS) |
+| `POST` | `/api/agent/chat` | Strategy agent reply via Gemini (`message`, optional `previous_interaction_id`) |
+
+Voice flow: the browser asks for a token, opens Gradium STT/TTS WebSockets with `?token=...`, streams mic audio into the agent textbox, then speaks the agent reply with TTS. The Gradium API key never leaves the server.
 
 ## Layout
 
 ```
 orchestrators-backend/
   main.py            # FastAPI app entry (and temporary Gemini smoke script)
+  services/
+    gradium.py       # Gradium browser token minting
+    agent.py         # Gemini strategy chat
   requirements.txt
   .env.example
   README.md
