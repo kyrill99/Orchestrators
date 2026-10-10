@@ -318,6 +318,7 @@ class _Loop:
         self.on_exit = on_exit
         self.live = live
         self.workspace: RunWorkspace | None = None
+        self.tokens = 0  # model tokens used by this run so far
         self.tools = self.make_tools()
 
     def make_tools(self) -> AgentTools:
@@ -421,6 +422,7 @@ class _Loop:
                 continue  # counts as a step
             if interaction is None:
                 return  # error recorded / run ended
+            self.count_tokens(interaction)
             if self.cancelled():
                 self.log("status", {"state": "stopped", "note": "stopped while the model was working"})
                 return
@@ -561,6 +563,17 @@ class _Loop:
                   "is not saved yet, then call finish_run(outcome, summary)."]
         return "\n".join(lines)
 
+    def count_tokens(self, interaction: Any) -> None:
+        """Add the interaction's token usage (if the API reports it) to the run."""
+        try:
+            n = _usage_tokens(interaction)
+            if n <= 0:
+                return
+            self.tokens += n
+            self.r.service.update_run(self.run_.id, tokens=self.tokens)
+        except Exception:  # noqa: BLE001 - usage is best effort
+            log.debug("token usage not recorded", exc_info=True)
+
     def record(self, interaction: Any) -> list[Any]:
         """Log the interaction's steps; return its function calls."""
         calls = []
@@ -602,6 +615,27 @@ class _ChainBroken:
     """create(): the chained conversation is rejected; start a fresh one."""
 
     error: Exception
+
+
+def _usage_tokens(interaction: Any) -> int:
+    """Total tokens of one interaction, from whichever usage field the SDK provides."""
+    usage = getattr(interaction, "usage", None) or getattr(interaction, "usage_metadata", None)
+    if usage is None:
+        return 0
+
+    def num(*names: str) -> int:
+        for name in names:
+            v = usage.get(name) if isinstance(usage, dict) else getattr(usage, name, None)
+            if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0:
+                return int(v)
+        return 0
+
+    total = num("total_tokens", "total_token_count")
+    if total:
+        return total
+    return (num("input_tokens", "total_input_tokens", "prompt_token_count")
+            + num("output_tokens", "total_output_tokens", "candidates_token_count")
+            + num("thought_tokens", "total_thought_tokens", "thoughts_token_count"))
 
 
 def _is_bad_request(e: Exception) -> bool:

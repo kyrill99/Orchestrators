@@ -1,7 +1,8 @@
 "use client";
 
 import { Handle, Position, type NodeProps } from "@xyflow/react";
-import { Bot, FileText } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Bot, FileText, RotateCw } from "lucide-react";
 import { getAssignee, type AssigneeId } from "@/lib/assignees";
 import { StatusBadge } from "@/components/task/status-badge";
 import { StatusIcon } from "@/components/task/status-icon";
@@ -21,6 +22,12 @@ export type GraphNodeData = {
   agent?: string;
   /** Latest version of each artifact saved on this task. */
   artifacts?: GraphNodeArtifact[];
+  /** Number of agent runs (attempts) on this task. */
+  cycles?: number;
+  /** Model tokens used across this task's agent runs. */
+  tokens?: number;
+  /** ISO start of the active agent run (live timer while running). */
+  activeSince?: string;
 };
 
 export type GraphNodeArtifact = {
@@ -144,6 +151,67 @@ function borderClass(selected: boolean | undefined, running: boolean): string {
 const HANDLE_CLASS =
   "!size-1.5 !min-h-0 !min-w-0 !border-0 !bg-neutral-400 !opacity-0 transition-opacity group-hover:!opacity-100";
 
+function formatTokens(n: number): string {
+  if (n < 1000) return `${n}`;
+  if (n < 1_000_000) return `${(n / 1000).toFixed(n < 100_000 ? 1 : 0)}k`;
+  return `${(n / 1_000_000).toFixed(1)}M`;
+}
+
+function formatElapsed(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const sec = total % 60;
+  const ss = String(sec).padStart(2, "0");
+  return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${ss}` : `${m}:${ss}`;
+}
+
+/** Live "m:ss" since the active run started; ticks every second. */
+function RunTimer({ since }: { since: string }) {
+  const start = Date.parse(since);
+  const [now, setNow] = useState<number>(() => Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+  if (Number.isNaN(start)) return null;
+  return (
+    <span
+      className="shrink-0 font-medium text-[#5E6AD2]"
+      title={`Running since ${new Date(start).toLocaleString()}`}
+    >
+      {formatElapsed(now - start)}
+    </span>
+  );
+}
+
+/** Cycle count, token usage and live run timer; muted and compact. */
+function NodeRunStats({ data }: { data: GraphNodeData }) {
+  const cycles = data.cycles ?? 0;
+  const tokens = data.tokens ?? 0;
+  const since = data.status === "running" ? data.activeSince : undefined;
+  if (cycles <= 0 && tokens <= 0 && !since) return null;
+  return (
+    <span className="ml-0.5 inline-flex shrink-0 items-center gap-1.5 text-[10px] leading-none text-muted-foreground tabular-nums">
+      {since ? <RunTimer since={since} /> : null}
+      {cycles > 0 ? (
+        <span
+          className="inline-flex items-center gap-0.5"
+          title={`${cycles} agent ${cycles === 1 ? "run" : "runs"} on this task`}
+        >
+          <RotateCw className="size-2.5" strokeWidth={2} />
+          {cycles}
+        </span>
+      ) : null}
+      {tokens > 0 ? (
+        <span title={`${tokens.toLocaleString()} tokens used by agent runs`}>
+          {formatTokens(tokens)} tok
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
 function NodeMeta({ data }: { data: GraphNodeData }) {
   const assignee = getAssignee(data.assigneeId ?? "unassigned");
   const showAssignee = assignee.kind !== "unassigned";
@@ -153,6 +221,7 @@ function NodeMeta({ data }: { data: GraphNodeData }) {
       <span className="inline-flex min-w-0 items-center gap-1 text-[11px] leading-none text-muted-foreground tabular-nums">
         <StatusIcon status={data.status} />
         <span className="truncate">{statusLabel[data.status]}</span>
+        <NodeRunStats data={data} />
       </span>
       <span className="inline-flex shrink-0 items-center gap-1">
         {data.artifacts && data.artifacts.length > 0 ? (

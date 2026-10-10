@@ -132,7 +132,7 @@ def apply_event(state: GraphState, ev: Event) -> None:
         state.runs[run.id] = run
     elif t == "run.updated":
         run = state.runs[p["runId"]]
-        for key, attr in (("pid", "pid"), ("host", "host"), ("logPath", "log_path")):
+        for key, attr in (("pid", "pid"), ("host", "host"), ("logPath", "log_path"), ("tokens", "tokens")):
             if key in p:
                 setattr(run, attr, p[key])
     elif t == "run.ended":

@@ -146,7 +146,19 @@ class TaskGraphService:
                 c.id for c in s.changesets.values() if c.status == "proposed"
             ],
             "activeRuns": [r.dump() for r in s.runs.values() if r.active],
+            "runStats": self._run_stats(),
         }
+
+    def _run_stats(self) -> dict[str, dict[str, Any]]:
+        """Per task: number of runs (cycles), tokens across them, active run start."""
+        stats: dict[str, dict[str, Any]] = {}
+        for r in self.state.runs.values():
+            st = stats.setdefault(r.task_id, {"cycles": 0, "tokens": 0, "activeSince": None})
+            st["cycles"] += 1
+            st["tokens"] += r.tokens or 0
+            if r.active and (st["activeSince"] is None or r.started_at > st["activeSince"]):
+                st["activeSince"] = r.started_at
+        return stats
 
     def task(self, task_id: str) -> dict[str, Any]:
         self._sync()
@@ -458,8 +470,8 @@ class TaskGraphService:
             return draft.runs[run.id].model_copy(deep=True)
 
     def update_run(self, run_id: str, **meta: Any) -> AgentRun:
-        """Attach runner details (pid, host, log_path) to a run."""
-        names = {"pid": "pid", "host": "host", "log_path": "logPath"}
+        """Attach runner details (pid, host, log_path, tokens) to a run."""
+        names = {"pid": "pid", "host": "host", "log_path": "logPath", "tokens": "tokens"}
         payload = {names[k]: v for k, v in meta.items() if k in names and v is not None}
         with self._sync_lock, self.store.locked():
             self._sync()

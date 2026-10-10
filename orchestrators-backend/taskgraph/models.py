@@ -293,6 +293,7 @@ class AgentRun(Model):
     pid: int | None = None
     host: str | None = None
     log_path: str | None = None
+    tokens: int = 0  # model tokens used so far (reported by the runner, if known)
 
     @property
     def active(self) -> bool:

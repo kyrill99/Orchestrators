@@ -33,6 +33,16 @@ export type ApiTask = {
   children?: string[];
 };
 
+/** Per-task agent run stats from GET /graph (`runStats`). */
+export type TaskRunStats = {
+  /** Number of agent runs (attempts) on the task. */
+  cycles: number;
+  /** Model tokens used across those runs (0 when not reported). */
+  tokens: number;
+  /** ISO start of the active run, or null when nothing is running. */
+  activeSince: string | null;
+};
+
 export type TaskGraphSnapshot = {
   project: GraphProject;
   seq: number;
@@ -40,7 +50,24 @@ export type TaskGraphSnapshot = {
   edges: TaskEdge[];
   pendingDecisions: string[];
   pendingChangesets: string[];
+  /** Task id -> run stats; tasks without runs are absent. */
+  runStats?: Record<string, TaskRunStats>;
 };
+
+function mapRunStats(raw: unknown): Record<string, TaskRunStats> {
+  const out: Record<string, TaskRunStats> = {};
+  if (!raw || typeof raw !== "object") return out;
+  for (const [taskId, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!value || typeof value !== "object") continue;
+    const v = value as { cycles?: unknown; tokens?: unknown; activeSince?: unknown };
+    out[taskId] = {
+      cycles: typeof v.cycles === "number" ? v.cycles : 0,
+      tokens: typeof v.tokens === "number" ? v.tokens : 0,
+      activeSince: typeof v.activeSince === "string" ? v.activeSince : null,
+    };
+  }
+  return out;
+}
 
 function todayIso() {
   return new Date().toISOString().slice(0, 10);
@@ -103,6 +130,7 @@ export async function fetchTaskGraph(): Promise<TaskGraphSnapshot> {
     edges,
     pendingDecisions: data.pendingDecisions || [],
     pendingChangesets: data.pendingChangesets || [],
+    runStats: mapRunStats(data.runStats),
   };
 }
 

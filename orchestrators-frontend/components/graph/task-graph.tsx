@@ -27,7 +27,7 @@ import {
   fetchProjectArtifacts,
   type ProjectArtifactFile,
 } from "@/lib/api";
-import { layoutGraph } from "@/lib/taskgraph-api";
+import { layoutGraph, type TaskRunStats } from "@/lib/taskgraph-api";
 import { useTaskGraph } from "@/lib/use-task-graph";
 import { setSelection } from "@/lib/presence";
 import { FlowMultiplayer } from "@/components/multiplayer/cursors";
@@ -114,6 +114,7 @@ export function TaskGraph() {
     const edges = data?.edges ?? [];
     const positions = layoutGraph(tasks, edges);
     const seq = data?.seq ?? 0;
+    const runStats: Record<string, TaskRunStats> = data?.runStats ?? {};
     const nodes: Node[] = tasks.map((task) => ({
       id: task.id,
       type: task.kind,
@@ -124,6 +125,9 @@ export function TaskGraph() {
         status: task.status,
         assigneeId: loadAssignee(task.id),
         artifacts: artifactsByTask[task.id],
+        cycles: runStats[task.id]?.cycles,
+        tokens: runStats[task.id]?.tokens,
+        activeSince: runStats[task.id]?.activeSince ?? undefined,
         seq,
       } satisfies GraphNodeData & { seq: number },
     }));
