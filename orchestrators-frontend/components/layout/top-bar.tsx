@@ -7,6 +7,11 @@ import { PROJECT_NAME, getTask } from "@/lib/fixtures";
 export function TopBar() {
   const pathname = usePathname();
 
+  // Agent page owns its own header chrome.
+  if (pathname.startsWith("/agent")) {
+    return null;
+  }
+
   const taskMatch = pathname.match(/^\/tasks\/([^/]+)/);
   const task = taskMatch ? getTask(taskMatch[1]) : undefined;
 

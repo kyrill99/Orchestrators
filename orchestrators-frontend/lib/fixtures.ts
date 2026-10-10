@@ -8,6 +8,16 @@ export type TaskActivity = {
   at: string;
 };
 
+export type CommentAuthorKind = "human" | "agent";
+
+export type TaskComment = {
+  id: string;
+  author: string;
+  authorKind: CommentAuthorKind;
+  body: string;
+  at: string;
+};
+
 export type Task = {
   id: string;
   title: string;
@@ -17,6 +27,7 @@ export type Task = {
   blockedBy: string[];
   relatedTo: string[];
   activity: TaskActivity[];
+  comments: TaskComment[];
   /** Inclusive schedule bounds for the Timeline Gantt (ISO date YYYY-MM-DD). */
   startDate: string;
   endDate: string;
@@ -73,6 +84,22 @@ export const tasks: Task[] = [
         at: "2026-10-08T09:00:00Z",
       },
     ],
+    comments: [
+      {
+        id: "c-start-1",
+        author: "orchestrator-agent",
+        authorKind: "agent",
+        body: "Starting strategy interview. I’ll only ask about intent and success — not implementation choices.",
+        at: "2026-10-08T09:01:00Z",
+      },
+      {
+        id: "c-start-2",
+        author: "lorenz",
+        authorKind: "human",
+        body: "Sounds good. Goal is evaluating our chunking algorithm.",
+        at: "2026-10-08T09:05:00Z",
+      },
+    ],
   },
   {
     id: "research",
@@ -96,6 +123,29 @@ export const tasks: Task[] = [
         id: "a-research-2",
         text: "agent moved to closed — memo attached",
         at: "2026-10-08T11:40:00Z",
+      },
+    ],
+    comments: [
+      {
+        id: "c-research-1",
+        author: "research-agent",
+        authorKind: "agent",
+        body: "Surveyed fixed windows, semantic splits, and hierarchical chunking. Memo in memory under agents/research.",
+        at: "2026-10-08T11:20:00Z",
+      },
+      {
+        id: "c-research-2",
+        author: "lorenz",
+        authorKind: "human",
+        body: "Prefer we weight coherence over raw latency unless strategy says otherwise — leave the call to agents.",
+        at: "2026-10-08T11:35:00Z",
+      },
+      {
+        id: "c-research-3",
+        author: "research-agent",
+        authorKind: "agent",
+        body: "Noted in strategy memory. Spawning three prototype tracks.",
+        at: "2026-10-08T11:42:00Z",
       },
     ],
   },
@@ -123,6 +173,22 @@ export const tasks: Task[] = [
         at: "2026-10-09T14:20:00Z",
       },
     ],
+    comments: [
+      {
+        id: "c-p1-1",
+        author: "prototype-agent",
+        authorKind: "agent",
+        body: "Fixed-window baseline is ready for review. Strong latency, weaker coherence vs semantic approach.",
+        at: "2026-10-09T14:22:00Z",
+      },
+      {
+        id: "c-p1-2",
+        author: "lorenz",
+        authorKind: "human",
+        body: "Don’t ask me A vs B — if coherence is the success criterion, factor that into the decision node yourself.",
+        at: "2026-10-09T15:10:00Z",
+      },
+    ],
   },
   {
     id: "proto-2",
@@ -148,6 +214,15 @@ export const tasks: Task[] = [
         at: "2026-10-09T10:05:00Z",
       },
     ],
+    comments: [
+      {
+        id: "c-p2-1",
+        author: "prototype-agent",
+        authorKind: "agent",
+        body: "Semantic boundary run in progress. Early recall@k looks promising; will post coherence when the batch finishes.",
+        at: "2026-10-09T10:10:00Z",
+      },
+    ],
   },
   {
     id: "proto-3",
@@ -168,6 +243,7 @@ export const tasks: Task[] = [
         at: "2026-10-08T12:00:00Z",
       },
     ],
+    comments: [],
   },
   {
     id: "decision",
@@ -188,6 +264,22 @@ export const tasks: Task[] = [
         at: "2026-10-09T15:00:00Z",
       },
     ],
+    comments: [
+      {
+        id: "c-dec-1",
+        author: "orchestrator-agent",
+        authorKind: "agent",
+        body: "I’ll pick an approach once prototypes report against success criteria. Escalating only if strategy weights are unclear.",
+        at: "2026-10-09T15:05:00Z",
+      },
+      {
+        id: "c-dec-2",
+        author: "lorenz",
+        authorKind: "human",
+        body: "Success is clear: coherence first, then latency. No need to ping me for the pick.",
+        at: "2026-10-09T16:00:00Z",
+      },
+    ],
   },
   {
     id: "implement",
@@ -202,6 +294,7 @@ export const tasks: Task[] = [
     endDate: "2026-10-28",
     progress: 0,
     activity: [],
+    comments: [],
   },
   {
     id: "deploy",
@@ -215,6 +308,7 @@ export const tasks: Task[] = [
     endDate: "2026-11-02",
     progress: 0,
     activity: [],
+    comments: [],
   },
 ];
 
@@ -242,7 +336,155 @@ export const chatMessages: ChatMessage[] = [
     role: "user",
     content: "Cool, I want to evaluate our chunking algorithm.",
   },
+  {
+    id: "m3",
+    role: "agent",
+    content:
+      "Got it — evaluating the chunking algorithm. What does success look like for you? For example: better recall, lower latency, clearer chunk boundaries, or something else?",
+  },
 ];
+
+export type AgentExample = {
+  id: string;
+  title: string;
+  description: string;
+  prompt: string;
+};
+
+/** Strategy-interview starters for the Agent welcome screen. */
+export const agentExamples: AgentExample[] = [
+  {
+    id: "ex-objective",
+    title: "Define the objective",
+    description: "Capture the end goal in one sentence — not how to build it",
+    prompt: "Help me state the project objective in one sentence.",
+  },
+  {
+    id: "ex-success",
+    title: "Clarify success criteria",
+    description: "What “done” means for this project type",
+    prompt: "What should success look like for this project?",
+  },
+  {
+    id: "ex-priorities",
+    title: "Set priorities",
+    description: "Goals and tradeoffs agents should optimize for",
+    prompt: "What are the top priorities and non-goals for this work?",
+  },
+];
+
+export type RecentChat = {
+  id: string;
+  title: string;
+  age: string;
+};
+
+export const recentChats: RecentChat[] = [
+  {
+    id: "chunking-interview",
+    title: "Chunking evaluation — objective interview",
+    age: "2d",
+  },
+];
+
+export type ProgressHealth = "on-track" | "at-risk" | "blocked";
+
+export type ProgressMention = {
+  id: string;
+  label: string;
+  kind: "task" | "decision" | "memory";
+};
+
+export type ProgressUpdate = {
+  id: string;
+  health: ProgressHealth;
+  author: string;
+  age: string;
+  /** Segments of body text; mentions render as chips. */
+  body: Array<{ type: "text"; value: string } | { type: "mention"; id: string }>;
+  mentions: ProgressMention[];
+};
+
+/** Newest first — Progress panel beside Graph / Timeline. */
+export const progressUpdates: ProgressUpdate[] = [
+  {
+    id: "u1",
+    health: "on-track",
+    author: "research-agent",
+    age: "43min ago",
+    body: [
+      {
+        type: "text",
+        value: "Closed literature pass and handed off three prototype tracks. Strategy still centers on evaluating ",
+      },
+      { type: "mention", id: "m-chunk" },
+      {
+        type: "text",
+        value: " against recall and coherence — no implementation choice escalated.",
+      },
+    ],
+    mentions: [
+      { id: "m-chunk", label: "Chunking evaluation", kind: "memory" },
+    ],
+  },
+  {
+    id: "u2",
+    health: "on-track",
+    author: "prototype-agent",
+    age: "2h ago",
+    body: [
+      { type: "mention", id: "m-p2" },
+      {
+        type: "text",
+        value:
+          " is running semantic boundary detection. Early latency looks fine; waiting on coherence scores before ",
+      },
+      { type: "mention", id: "m-dec" },
+      { type: "text", value: "." },
+    ],
+    mentions: [
+      { id: "m-p2", label: "Prototype Approach 2", kind: "task" },
+      { id: "m-dec", label: "Decision: which approach", kind: "decision" },
+    ],
+  },
+  {
+    id: "u3",
+    health: "at-risk",
+    author: "prototype-agent",
+    age: "5h ago",
+    body: [
+      { type: "mention", id: "m-p1" },
+      {
+        type: "text",
+        value:
+          " moved to in-review. Fixed windows beat baseline latency but trail on coherence — may need strategy call if we weight latency higher.",
+      },
+    ],
+    mentions: [
+      { id: "m-p1", label: "Prototype Approach 1", kind: "task" },
+    ],
+  },
+  {
+    id: "u4",
+    health: "on-track",
+    author: "lorenz",
+    age: "2d ago",
+    body: [
+      {
+        type: "text",
+        value:
+          "Objective set: evaluate our chunking algorithm. Success criteria pulled into memory; agents may decide approach details.",
+      },
+    ],
+    mentions: [],
+  },
+];
+
+export const progressHealthLabel: Record<ProgressHealth, string> = {
+  "on-track": "On track",
+  "at-risk": "At risk",
+  blocked: "Blocked",
+};
 
 export const memoryTree: MemoryFolder[] = [
   {
