@@ -179,3 +179,11 @@ decision), no active run, and either never run or last run `lost` (fewer than
 planner to restart them, so a failing task cannot loop; succeeded tasks are in review.
 The state (`engine_state` table) survives restarts; default stopped. The engine refuses
 to start with the `record` runner.
+
+The owner loop (`loop.py`: `POST /tasks/{id}/review`, `POST /tasks/{id}/decide`,
+`POST /autostart`) starts runs through the same `Engine.dispatch` (same queue and
+limit; it also closes ready start/end milestones), whether or not the engine is
+running. A worker that needs the owner puts a decision on its task and finishes as
+failed; answering it with `/decide` reopens the task and queues it again, and the next
+attempt's brief has the answer. Sending a result back restarts the task with the note as
+instructions.

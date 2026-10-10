@@ -87,6 +87,7 @@ def build_router(
     *,
     runlog: RunLog | None = None,
     scratchpads: Scratchpads | None = None,
+    engine: "Engine | None" = None,
 ) -> APIRouter:
     """`runs` defaults to the runner configured by TASKGRAPH_RUNNER (see runs.py).
     With `runlog` / `scratchpads`, the run steps and scratchpad endpoints work."""
@@ -163,17 +164,20 @@ def build_router(
     def review_finished_task(task_id: str, body: TaskReviewBody):
         """Owner approves an in-review task (-> closed, next tasks start) or sends it
         back (-> worker restarts with the note as feedback)."""
-        return call(review_task, service, manager, body.actor, task_id, body.approve, body.note)
+        return call(review_task, service, manager, body.actor, task_id, body.approve, body.note,
+                    engine)
 
     @r.post("/tasks/{task_id}/decide")
     def decide_task(task_id: str, body: DecideBody):
         """Owner answers the task's pending decision; tasks it unblocks start."""
-        return call(decide, service, manager, body.actor, task_id, body.chosen, body.rationale)
+        return call(decide, service, manager, body.actor, task_id, body.chosen, body.rationale,
+                    engine)
 
     @r.post("/autostart")
     def autostart(body: StopBody):
-        """Start workers on every ready task now."""
-        return {"started": call(auto_start, service, manager, body.actor)}
+        """Start runs on ready tasks now (through the engine: its queue rules and
+        concurrency limit, even while it is stopped)."""
+        return {"started": call(auto_start, service, manager, body.actor, engine)}
 
     @r.get("/tasks/{task_id}/runs")
     def task_runs(task_id: str):

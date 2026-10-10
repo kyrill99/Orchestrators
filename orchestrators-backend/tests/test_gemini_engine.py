@@ -355,6 +355,36 @@ class EngineTest(Base):
         with self.assertRaises(TaskGraphError):
             engine.start(H, "go")
 
+    def test_owner_loop_goes_through_the_engine(self):
+        from taskgraph.loop import auto_start, decide, review_task
+        from taskgraph.models import RequestDecision
+
+        svc = TaskGraphService()
+        svc.submit(H, [
+            CreateTask(id="start", title="START", kind="start"),
+            CreateTask(id="a", title="A", blocked_by=["start"]),
+            CreateTask(id="b", title="B", blocked_by=["start"]),
+            CreateTask(id="c", title="C", blocked_by=["start"]),
+        ])
+        runs = RunManager(svc, FakeRunner())
+        engine = Engine(svc, runs, self.db, max_runs=2)
+        # Stopped engine: autostart still dispatches once, within the limit,
+        # after closing the START milestone.
+        self.assertEqual(auto_start(svc, runs, H, engine), ["a", "b"])
+        self.assertEqual(svc.task("start")["status"], "closed")
+        a = svc.runs(task_id="a", active=True)[0]
+        runs.finish(Actor(type="agent", id="gemini"), a.id, "succeeded", "done")
+        out = review_task(svc, runs, H, "a", approve=True, engine=engine)
+        self.assertEqual((svc.task("a")["status"], out["started"]), ("closed", ["c"]))
+        # A worker that asked the owner a question is queued again once answered.
+        b = svc.runs(task_id="b", active=True)[0]
+        svc.submit(Actor(type="agent", id="gemini"),
+                   [RequestDecision(task_id="b", question="Recall or latency?")], "ask")
+        runs.finish(Actor(type="agent", id="gemini"), b.id, "failed", "needs a strategy decision")
+        self.assertNotIn("b", [q["id"] for q in engine.queue()])
+        out = decide(svc, runs, H, "b", "recall", "quality first", engine=engine)
+        self.assertEqual(out["started"], ["b"])
+
     def test_background_loop_dispatches(self):
         self.engine.interval = 0.05
         self.engine.start_loop()

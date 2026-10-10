@@ -100,7 +100,9 @@ runs = RunManager(
     runner_from_env(lambda: GeminiRunner(taskgraph, runlog, scratchpads, memory=memory, issues=issues)),
 )
 engine = Engine(taskgraph, runs, db)
-app.include_router(build_router(taskgraph, runs, runlog=runlog, scratchpads=scratchpads))
+app.include_router(
+    build_router(taskgraph, runs, runlog=runlog, scratchpads=scratchpads, engine=engine)
+)
 app.include_router(build_engine_router(engine))
 
 

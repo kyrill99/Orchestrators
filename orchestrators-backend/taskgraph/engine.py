@@ -11,8 +11,14 @@ active run, and
   than ENGINE_MAX_ATTEMPTS times in a row.
 
 A task whose last run failed or was stopped is not retried automatically: a
-human (or the planner) restarts it, so a failing task cannot loop.
-A task that succeeded is 'in-review', so it is not ready either.
+human (or the planner) restarts it, so a failing task cannot loop. The
+exception is a run that stopped to ask the owner (request_decision): once the
+decision is answered, the task is queued again. A task that succeeded is
+'in-review'; the owner approves it or sends it back (taskgraph/loop.py).
+
+`dispatch()` is the one way runs get started automatically: the engine loop
+calls it while running, and the owner actions in loop.py (approve, decide,
+POST /autostart) call it too. It first closes ready start/end milestones.
 
 The state (running / stopped) lives in SQLite, so it survives restarts and any
 process sharing the database (the MCP server) can flip it. Default: stopped.
@@ -31,6 +37,7 @@ from typing import Any
 
 from db import Database
 
+from .loop import close_ready_milestones
 from .models import Actor, AgentRun
 from .runs import RunManager
 from .service import TaskGraphError, TaskGraphService
@@ -38,6 +45,14 @@ from .service import TaskGraphError, TaskGraphService
 log = logging.getLogger("taskgraph.engine")
 
 ENGINE_ACTOR = Actor(type="agent", id="engine")
+
+
+def _answered_since(task: dict[str, Any], run: AgentRun) -> bool:
+    """The task's decision was answered after `run` ended (the run asked for it)."""
+    decision = task.get("decision") or {}
+    answered = decision.get("resolvedAt")
+    return bool(decision.get("state") == "resolved" and answered and run.ended_at
+                and answered >= run.ended_at)
 
 
 def _now() -> str:
@@ -136,7 +151,7 @@ class Engine:
                 continue
             if history:
                 last = history[-1]
-                if last.status != "lost":
+                if last.status != "lost" and not _answered_since(task, last):
                     continue
                 lost_streak = 0
                 for r in reversed(history):
@@ -149,10 +164,18 @@ class Engine:
         return out
 
     def tick(self) -> list[AgentRun]:
-        """Start runs on queued tasks while there are free slots. Returns the new runs."""
+        """While running: dispatch. Returns the new runs."""
         if not self.running:
             return []
+        return self.dispatch(ENGINE_ACTOR, "engine: task is ready")
+
+    def dispatch(self, actor: Actor, reason: str) -> list[AgentRun]:
+        """Close ready milestones, then start runs on queued tasks while there
+        are free slots (whether or not the engine is running)."""
+        if actor.type == "agent" and self.service.state.settings.autonomy == "ask-all":
+            return []  # a human has to start runs
         with self._tick_lock:
+            close_ready_milestones(self.service, actor)
             started: list[AgentRun] = []
             free = self.max_runs - len(self.runs.active())
             for task in self.queue():
@@ -161,7 +184,7 @@ class Engine:
                 last = self.service.runs(task_id=task["id"])
                 try:
                     run = self.runs.start(
-                        ENGINE_ACTOR, task["id"], "engine: task is ready",
+                        actor, task["id"], reason,
                         agent_id=self.agent_id,
                         restart_of=last[-1].id if last else None,
                     )
