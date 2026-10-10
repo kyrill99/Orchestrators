@@ -148,8 +148,7 @@
 
 /* React Flow chrome */
 .react-flow__attribution {
-  font-size: 10px !important;
-  opacity: 0.55;
+  display: none !important;
 }
 .react-flow__controls-button {
   border: none !important;
