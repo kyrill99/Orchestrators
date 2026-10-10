@@ -4,7 +4,10 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from presence import PresenceStore  # noqa: E402
+from fastapi import FastAPI  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
+
+from presence import PresenceStore, build_router  # noqa: E402
 
 
 class PresenceStoreTest(unittest.TestCase):
@@ -67,6 +70,33 @@ class PresenceStoreTest(unittest.TestCase):
         self.store.leave("a@x.com")
         self.assertEqual(self.store.active(), [])
         self.assertEqual(len(self.changes), 2)
+
+
+
+class PresenceApiTest(unittest.TestCase):
+    """Through HTTP: catches request-model wiring the store tests can't."""
+
+    def setUp(self):
+        app = FastAPI()
+        app.include_router(build_router(PresenceStore(ttl=15)))
+        self.client = TestClient(app)
+
+    def test_heartbeat_and_list(self):
+        res = self.client.post(
+            "/api/presence",
+            json={"where": "task:t1", "typing": True, "conversation_id": None},
+            headers={"X-Forwarded-Email": "a@x.com"},
+        )
+        self.assertEqual(res.status_code, 200, res.text)
+        self.assertEqual([e["email"] for e in res.json()], ["a@x.com"])
+        self.assertEqual(self.client.get("/api/presence").json()[0]["where"], "task:t1")
+
+    def test_empty_where_leaves(self):
+        headers = {"X-Forwarded-Email": "a@x.com"}
+        self.client.post("/api/presence", json={"where": "agent"}, headers=headers)
+        res = self.client.post("/api/presence", json={"where": ""}, headers=headers)
+        self.assertEqual(res.status_code, 200, res.text)
+        self.assertEqual(self.client.get("/api/presence").json(), [])
 
 
 if __name__ == "__main__":
