@@ -6,6 +6,7 @@ import { AgentDrawerProvider } from "@/components/layout/agent-drawer-context";
 import { SideNav } from "@/components/layout/side-nav";
 import { TopBar } from "@/components/layout/top-bar";
 import { AgentFab } from "@/components/layout/agent-fab";
+import { BugReportButton } from "@/components/layout/bug-report-button";
 import { AgentDrawer } from "@/components/agent/agent-drawer";
 import "./globals.css";
 
@@ -53,7 +54,8 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
                     {children}
                   </main>
                 </div>
-                <div className="mt-1.5 flex h-8 shrink-0 items-center justify-end pr-0.5">
+                <div className="mt-1.5 flex h-8 shrink-0 items-center justify-end gap-0.5 pr-0.5">
+                  <BugReportButton />
                   <AgentFab />
                 </div>
               </div>

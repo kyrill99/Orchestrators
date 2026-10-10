@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import {
   Box,
   Brain,
+  Bug,
   ChevronDown,
   MousePointer2,
 } from "lucide-react";
@@ -17,6 +18,7 @@ const items = [
   { href: "/agent", label: "Agent", icon: MousePointer2 },
   { href: "/project", label: "Project", icon: Box },
   { href: "/memory", label: "Memory", icon: Brain },
+  { href: "/issues", label: "Issues", icon: Bug },
 ] as const;
 
 export function SideNav() {

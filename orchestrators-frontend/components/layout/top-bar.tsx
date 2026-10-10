@@ -71,6 +71,12 @@ export function TopBar() {
             </span>
           </>
         ) : null}
+        {pathname.startsWith("/issues") ? (
+          <>
+            <span className="text-muted-foreground/60">/</span>
+            <span className="text-muted-foreground">Issues</span>
+          </>
+        ) : null}
         {pathname.startsWith("/memory") ? (
           <>
             <span className="text-muted-foreground/60">/</span>
