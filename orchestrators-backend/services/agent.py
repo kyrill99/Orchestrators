@@ -87,6 +87,15 @@ MEMORY_NOTE = (
 _tools: AgentTools | None = None
 
 
+_brief: Callable[[], str] | None = None
+
+
+def configure_brief(fn: Callable[[], str] | None) -> None:
+    """Project brief provider (projects.ProjectRegistry.brief), added to the opening context."""
+    global _brief
+    _brief = fn
+
+
 def configure_tools(tools: AgentTools | None) -> None:
     """Attach shared memory/taskgraph tools (called from main.py at startup)."""
     global _tools
@@ -123,7 +132,13 @@ def _opening_context(tools: AgentTools | None = None) -> str:
             board += f" {pending} strategy question(s) waiting for the owner."
     else:
         board = "No tasks yet."
-    return "\n\n".join(part for part in (memory, f"## Project board\n\n{board}") if part)
+    brief = ""
+    if _brief is not None:
+        try:
+            brief = _brief()
+        except Exception:  # noqa: BLE001
+            log.warning("could not load project brief", exc_info=True)
+    return "\n\n".join(part for part in (brief, memory, f"## Project board\n\n{board}") if part)
 
 
 def _client() -> genai.Client:

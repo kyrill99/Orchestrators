@@ -56,6 +56,7 @@ class PresenceStore:
         where: str,
         typing: bool = False,
         conversation_id: str | None = None,
+        project: str = "default",
     ) -> list[dict[str, Any]]:
         now = self._clock()
         with self._lock:
@@ -67,10 +68,11 @@ class PresenceStore:
                 "where": where[:200],
                 "typing": bool(typing),
                 "conversation_id": conversation_id,
+                "project": project,
                 "updated_at": now,
             }
             changed = pruned or old is None or any(
-                old.get(k) != entry[k] for k in ("where", "typing", "conversation_id")
+                old.get(k) != entry[k] for k in ("where", "typing", "conversation_id", "project")
             )
             self._entries[email] = entry
             snapshot = self._snapshot()
@@ -98,6 +100,7 @@ def build_router(store: PresenceStore):
     from pydantic import BaseModel
 
     from identity import current_user
+    from projects import current_project
 
     class Heartbeat(BaseModel):
         where: str = ""
@@ -116,7 +119,8 @@ def build_router(store: PresenceStore):
         if not body.where:
             return store.leave(user.email)
         return store.update(
-            user.email, user.name, body.where, body.typing, body.conversation_id
+            user.email, user.name, body.where, body.typing, body.conversation_id,
+            project=current_project.get(),
         )
 
     return r

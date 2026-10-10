@@ -28,7 +28,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
@@ -144,6 +144,10 @@ def attachment_url(issue_id: str, attachment_id: str) -> str:
 
 
 class IssueService:
+    # Called with the issue dict whenever an issue becomes open (created open or
+    # a draft published); main.py uses it to file a task in the Orchestrators project.
+    on_open: Callable[[dict[str, Any]], None] | None = None
+
     def __init__(self, db: Database, files_path: str | Path | None = None):
         self.db = db
         self.files = Path(files_path or os.environ.get("ISSUES_PATH", DEFAULT_FILES_PATH))
@@ -277,7 +281,20 @@ class IssueService:
                     json.dumps(_clean_labels(labels)), json.dumps(context or {}), now, now,
                 ),
             )
-        return self.get(issue_id)
+        issue = self.get(issue_id)
+        if status == "open":
+            self._opened(issue)
+        return issue
+
+    def _opened(self, issue: dict[str, Any]) -> None:
+        if self.on_open is None:
+            return
+        try:
+            self.on_open(issue)
+        except Exception:  # noqa: BLE001 - filing the task is best effort
+            import logging
+
+            logging.getLogger(__name__).warning("on_open hook failed", exc_info=True)
 
     def update(
         self,
@@ -332,7 +349,9 @@ class IssueService:
                 " WHERE id = ?",
                 (self._next_number(c), _now(), _now(), issue_id),
             )
-        return self.get(issue_id)
+        issue = self.get(issue_id)
+        self._opened(issue)
+        return issue
 
     def close(self, author: Author, ref: str | int, reason: str | None = None) -> dict[str, Any]:
         issue_id = self.resolve(ref)

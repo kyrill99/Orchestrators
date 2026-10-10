@@ -230,6 +230,14 @@ class _Loop:
         base = {"model": r.model, "tools": tools, "system_instruction": worker_instructions(),
                 "generation_config": {"thinking_summaries": "auto"}}
         input_: Any = build_brief(r.service, r.scratchpads, r.runlog, r.memory, self.run_, self.task)
+        brief_fn = getattr(r, "project_brief", None)  # set per project in main.py
+        if brief_fn is not None and isinstance(input_, str):
+            try:
+                project_brief = brief_fn()
+                if project_brief:
+                    input_ = f"{project_brief}\n\n{input_}"
+            except Exception:  # noqa: BLE001 - context only
+                pass
         previous: str | None = None
         steps = nudges = 0
         while True:

@@ -1,0 +1,99 @@
+# Projects
+
+A **project** is one body of work with its own task graph and a short **brief**:
+a top-level description that the planner (strategy agent) and every task worker
+receive as context. Teammates can each have a different project open and see who
+is where.
+
+## Goals
+
+- Create projects in the UI, switch between them, edit the brief.
+- Each project has its own task graph, runs, activity and decisions.
+- The brief is injected into the planner's opening context and every worker prompt.
+- Presence shows which project each teammate has open.
+- Bug reports (screenshot / bug button) land as tasks in the **Orchestrators** project.
+- Every existing API keeps working unchanged (no per-call-site changes).
+
+Non-goals (for now): permissions per project, moving tasks between projects,
+per-project memory (memory stays shared across projects, which is the point of
+memory), deleting projects.
+
+## How the active project travels
+
+```
+browser ── cookie orch_project=<id> ──▶ oauth2-proxy ──▶ FastAPI
+                                                         │ ProjectMiddleware (ASGI)
+                                                         │   sets contextvar current_project
+                                                         ▼
+                        routers / AgentTools / loop ──▶ ScopedProxy ──▶ ProjectGraphs[id]
+                                                                         ├─ TaskGraphService
+                                                                         └─ RunManager (+ runner)
+```
+
+- The frontend stores the active project in the cookie `orch_project` (default
+  `default`). Browsers send it with every same-origin request, including
+  `EventSource` streams, so no fetch call needs to change. Switching sets the
+  cookie and reloads.
+- `ProjectMiddleware` (pure ASGI) reads the cookie, falls back to `default` for
+  unknown ids, and sets the `current_project` context variable for the request.
+  Starlette's threadpool and asyncio tasks copy context, so sync endpoints and
+  agent tool calls see it too.
+- `ScopedProxy` objects stand in for the task graph service and the run manager
+  everywhere they were passed before (`build_router`, `AgentTools`, memory router).
+  Each attribute access resolves to the current project's instance, so a request
+  only ever touches its own project's graph.
+
+## Storage
+
+| What | Where |
+|---|---|
+| Project registry (`id, name, description, created_by, created_at`) | table `projects` in the main SQLite DB (`data/orchestrators.db`) |
+| Task graph of `default` | unchanged: the existing `taskgraph_events` table in the main DB |
+| Task graph of any other project | its own SQLite file `data/projects/<id>.db` (same `taskgraph_events` schema) |
+
+Separate files keep the existing event-log code untouched (one log per store,
+sequence numbers per project) and make a project easy to copy or delete.
+
+Seeded on first start: `default` (the existing graph) and `orchestrators`
+(the Orchestrators app itself, target for bug reports).
+
+## Agents
+
+- **Planner / strategy chat**: the opening context gets a `## Project` section with
+  the project name and brief, ahead of memory and the board summary.
+- **Workers**: each project has its own `RunManager` and runner. Subprocess runs get
+  `TASKGRAPH_PROJECT` and `TASKGRAPH_DB` in their environment; `taskgraph/worker.py`
+  opens that project's store and puts the brief at the top of its prompt.
+- Run exit callbacks are bound to the concrete project manager (not the proxy), so
+  a run that ends after the request is over still records into the right project.
+
+## API
+
+| | |
+|---|---|
+| `GET /api/projects` | `[{id, name, description, createdBy, createdAt, viewers[]}]`; `viewers` = emails whose presence heartbeat is in that project |
+| `GET /api/projects/current` | the project selected by the cookie |
+| `POST /api/projects` `{name, description}` | create (id = slug of the name), 201 |
+| `PATCH /api/projects/{id}` `{name?, description?}` | edit the brief |
+
+Presence entries gain `project` (set server-side from the cookie); the frontend
+only shows teammates in the same project.
+
+## Bug reports
+
+Creating an issue (`POST /api/issues`) also creates a task `Bug: <title>` in the
+`orchestrators` project graph, with the issue reference in its description, so it
+shows up in that project's graph, timeline and can be picked up by a worker.
+
+## Risks / follow-ups
+
+- The live "graph" SSE channel is shared: a change in project B makes clients of
+  project A refetch their own (unchanged) graph. Harmless, slightly chatty.
+- MCP server processes (outside FastAPI) still use the default project unless
+  started with `TASKGRAPH_DB`/`TASKGRAPH_PROJECT`.
+- No auth per project: anyone signed in sees all projects.
+- Memory is shared and dedupes synced decisions/changesets by task or changeset id,
+  which are only unique per project: a decision in project B with the same id as one
+  already synced from another project is skipped. Fix: prefix refs with the project id.
+- Issues created through the MCP server (not the FastAPI app) do not become tasks.
+- `python -m storage backup` copies only the main DB, not `data/projects/*.db`.

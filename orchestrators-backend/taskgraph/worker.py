@@ -93,7 +93,23 @@ def main() -> int:
     run_id = os.environ.get("TASKGRAPH_RUN_ID", "run")
     me = Actor(type="agent", id=os.environ.get("TASKGRAPH_AGENT_ID", "worker"))
     brief = sys.stdin.read()
-    svc = TaskGraphService(open_taskgraph_store())
+    project_db = os.environ.get("TASKGRAPH_DB")
+    if project_db:  # a non-default project: its own store (docs/architecture/projects.md)
+        from db import Database
+        from taskgraph.sqlite_store import SqliteEventStore
+
+        svc = TaskGraphService(SqliteEventStore(Database(project_db)))
+    else:
+        svc = TaskGraphService(open_taskgraph_store())
+    try:
+        from projects import ProjectRegistry
+        from storage import default_db
+
+        project_brief = ProjectRegistry(default_db()).brief(os.environ.get("TASKGRAPH_PROJECT") or "default")
+        if project_brief:
+            brief = f"{project_brief}\n\n{brief}"
+    except Exception:  # noqa: BLE001 - the brief is context, not required
+        traceback.print_exc()
 
     try:
         task = svc.task(task_id)
