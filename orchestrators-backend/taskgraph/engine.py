@@ -3,8 +3,8 @@
 While the engine is *running*, `tick()` (called every ENGINE_INTERVAL seconds
 by a background thread in the FastAPI process) starts runs on queued tasks
 until ENGINE_MAX_RUNS runs are active. The queue holds work tasks (kind
-'task') that are ready (open, blockers closed, no pending decision), have no
-active run, and
+'task') that are ready (open, blockers closed, no pending decision), are not
+assigned to a person, have no active run, and
 
 - were never run, or
 - whose last run was 'lost' (e.g. interrupted by a backend restart), fewer
@@ -53,6 +53,11 @@ def _answered_since(task: dict[str, Any], run: AgentRun) -> bool:
     answered = decision.get("resolvedAt")
     return bool(decision.get("state") == "resolved" and answered and run.ended_at
                 and answered >= run.ended_at)
+
+
+def _assigned_to_person(task: dict[str, Any]) -> bool:
+    """A person took the task: the engine does not give it to an agent."""
+    return (task.get("assignee") or {}).get("type") == "human"
 
 
 def _now() -> str:
@@ -144,7 +149,7 @@ class Engine:
             by_task.setdefault(run.task_id, []).append(run)
         out = []
         for task in self.service.ready():
-            if task["kind"] != "task":
+            if task["kind"] != "task" or _assigned_to_person(task):
                 continue
             history = by_task.get(task["id"], [])
             if any(r.active for r in history):
@@ -206,6 +211,120 @@ class Engine:
             "maxRuns": self.max_runs,
             "activeRuns": [r.dump() for r in active],
             "queue": [{"id": t["id"], "title": t["title"]} for t in queue],
+            "waiting": self.waiting(active, queue),
+        }
+
+    def waiting(self, active: list[AgentRun] | None = None,
+                queue: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+        """Why work is not moving: what waits for the owner (review, decisions,
+        proposed changes), which open tasks are blocked and by what, which
+        ready tasks the engine will not start (assigned to a person; failed,
+        stopped or lost too often), and whether autonomy or the run limit
+        holds the queue.
+
+        `reason` is the main cause (a code, or None when nothing waits),
+        `summary` one line for people, `focus` the task to look at first."""
+        active = self.runs.active() if active is None else active
+        queue = self.queue() if queue is None else queue
+        g = self.service
+        tasks = {t["id"]: t for t in g.graph()["tasks"]}
+        brief = lambda t: {"id": t["id"], "title": t["title"]}  # noqa: E731
+
+        review = [brief(t) for t in tasks.values() if t["status"] == "in-review"]
+        decisions = [
+            {"id": d["taskId"], "title": d["title"], "question": d["question"]}
+            for d in g.decisions("pending")
+        ]
+        proposals = [{"id": c["id"], "reason": c.get("reason")} for c in g.changesets("proposed")]
+        blocked = [
+            {"id": b["id"], "title": b["title"],
+             "blockedBy": [{"id": w["id"], "title": tasks[w["id"]]["title"], "status": w["status"]}
+                           for w in b["waitingOn"]]}
+            for b in g.blocked() if tasks[b["id"]]["status"] == "open"
+        ]
+        queued = {t["id"] for t in queue}
+        active_tasks = {r.task_id for r in active}
+        ready = g.ready()
+        milestones = [t for t in ready if t["kind"] in ("start", "end")]
+        assigned_to_people, needs_restart = [], []
+        for t in ready:
+            if t["kind"] != "task" or t["id"] in queued or t["id"] in active_tasks:
+                continue
+            if _assigned_to_person(t):
+                assigned_to_people.append({**brief(t), "assignee": t["assignee"]["id"]})
+                continue
+            history = g.runs(task_id=t["id"])
+            if history:
+                needs_restart.append({**brief(t), "lastRun": history[-1].status})
+        ask_all = g.state.settings.autonomy == "ask-all"
+        at_limit = bool(queue) and len(active) >= self.max_runs
+
+        def first(items: list[dict[str, Any]], what: str) -> str:
+            more = f" (+{len(items) - 1} more)" if len(items) > 1 else ""
+            return f"{what}: {items[0]['title']}{more}"
+
+        parts: list[tuple[str, str]] = []
+        held = len(queue) + len(milestones)  # ask-all: the engine does not even close milestones
+        if held and ask_all:
+            parts.append(("ask-all", f"Autonomy is ask-all, so the engine starts nothing by itself "
+                                     f"({held} ready)"))
+        elif at_limit:
+            parts.append(("run-limit", f"At the run limit ({len(active)}/{self.max_runs}); "
+                                       f"{len(queue)} queued"))
+        if review:
+            parts.append(("review", first(review, "Waiting for your review")))
+        if decisions:
+            parts.append(("decision", first(decisions, "Waiting for your decision")))
+        if proposals:
+            n = len(proposals)
+            parts.append(("proposal", f"Waiting for you to approve {n} proposed change{'s' * (n != 1)}"))
+        if assigned_to_people:
+            t = assigned_to_people[0]
+            parts.append(("assigned-to-person", f"Assigned to a person, so the engine leaves it: "
+                                                f"{t['title']} ({t['assignee']})"))
+        if needs_restart:
+            t = needs_restart[0]
+            parts.append(("needs-restart", f"Not restarted automatically: {t['title']} "
+                                           f"(last run {t['lastRun']})"))
+        if not parts and blocked and not active and not queue:
+            b = blocked[0]
+            on = ", ".join(f"{w['title']} ({w['status']})" for w in b["blockedBy"])
+            parts.append(("blocked", f"Blocked: {b['title']} waits on {on}"))
+
+        focus = None
+        if review:
+            focus = {**review[0], "kind": "review"}
+        elif decisions:
+            focus = {"id": decisions[0]["id"], "title": decisions[0]["title"], "kind": "decision"}
+        elif assigned_to_people:
+            focus = {**brief(assigned_to_people[0]), "kind": "assigned"}
+        elif needs_restart:
+            focus = {**brief(needs_restart[0]), "kind": "restart"}
+
+        if parts:
+            summary = "; ".join(p for _, p in parts)
+        elif active:
+            summary = f"Agents are working on {len(active)} task{'s' * (len(active) != 1)}"
+        elif queue:
+            summary = f"{len(queue)} task{'s' * (len(queue) != 1)} ready to start"
+        elif tasks and all(t["status"] == "closed" for t in tasks.values()):
+            summary = "All tasks are done"
+        elif not tasks:
+            summary = "No tasks yet"
+        else:
+            summary = "Nothing is ready to start"
+        return {
+            "reason": parts[0][0] if parts else None,
+            "summary": summary,
+            "focus": focus,
+            "review": review,
+            "decisions": decisions,
+            "proposals": proposals,
+            "blocked": blocked,
+            "assignedToPeople": assigned_to_people,
+            "needsRestart": needs_restart,
+            "autonomy": g.state.settings.autonomy,
+            "atRunLimit": at_limit,
         }
 
     # ---- background loop --------------------------------------------------

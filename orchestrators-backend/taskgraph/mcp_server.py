@@ -50,7 +50,8 @@ Check each run's `runner`: 'gemini' runs a Gemini agent in the server process;
 
 Engine: engine_start keeps agents working on ready tasks (up to its concurrency
 limit) in the API server; engine_stop stops dispatching (stop_runs also stops
-active runs); engine_status shows state, active runs and the queue.
+active runs); engine_status shows state, active runs, the queue and `waiting`
+(why nothing is starting: review, decisions, blocked tasks, autonomy).
 Each task has a markdown scratchpad (read_scratchpad / write_scratchpad /
 append_scratchpad) that its agents use as working memory across runs."""
 

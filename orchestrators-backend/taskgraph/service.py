@@ -397,7 +397,8 @@ class TaskGraphService:
 
         The task must be startable (exists, not closed, blockers closed, no
         pending decision, no other active run). In the same write the task
-        moves to 'running' and is assigned to `agent`. Under autonomy
+        moves to 'running' and is assigned to `agent` (unless another agent, e.g.
+        the GUI's "Agent", already has it). Under autonomy
         'ask-all' only humans may start runs.
         """
         if actor.type == "agent" and not (reason and reason.strip()):
@@ -448,7 +449,9 @@ class TaskGraphService:
             follow: list[Op] = []
             if task.status != "running":
                 follow.append(SetStatus(task_id=task_id, status="running"))
-            if task.assignee != agent:
+            # A task already assigned to an agent (e.g. the GUI's "Agent") keeps
+            # it; the run records which worker did the work.
+            if task.assignee is None or task.assignee.type != "agent":
                 follow.append(AssignTask(task_id=task_id, assignee=agent))
             events.extend(self._apply_ops(draft, actor, follow, None, reason))
             self._commit(draft, events)

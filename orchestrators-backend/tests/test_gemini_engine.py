@@ -393,6 +393,113 @@ class EngineTest(Base):
         self.assertTrue(wait_for(lambda: len(self.runs.active()) == 2))
 
 
+class EngineWaitingTest(unittest.TestCase):
+    """status()['waiting'] says why a running engine starts nothing."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.db = Database(os.path.join(self.tmp.name, "o.db"))
+        self.addCleanup(self.db.close)
+        self.svc = TaskGraphService()
+        self.svc.submit(H, [  # the pitch project: a linear chain
+            CreateTask(id="start", title="START", kind="start"),
+            CreateTask(id="pitch", title="Structure narrative arc and timing", blocked_by=["start"]),
+            CreateTask(id="demo", title="Coordinate the demo", blocked_by=["pitch"]),
+            CreateTask(id="end", title="END", kind="end", blocked_by=["demo"]),
+        ])
+        self.runs = RunManager(self.svc, FakeRunner())
+        self.engine = Engine(self.svc, self.runs, self.db, max_runs=1, max_attempts=1)
+        self.engine.start(H, "go")
+        self.gemini = Actor(type="agent", id="gemini")
+
+    def finish(self, task_id, outcome="succeeded"):
+        run = self.svc.runs(task_id=task_id, active=True)[0]
+        self.runs.finish(self.gemini, run.id, outcome, "done")
+
+    def test_in_review_blocks_the_chain(self):
+        self.assertEqual([r.task_id for r in self.engine.tick()], ["pitch"])
+        self.assertEqual(self.engine.status()["waiting"]["reason"], None)  # working
+        self.finish("pitch")
+        self.assertEqual(self.engine.tick(), [])
+        status = self.engine.status()
+        w = status["waiting"]
+        self.assertEqual((status["activeRuns"], status["queue"]), ([], []))
+        self.assertEqual(w["reason"], "review")
+        self.assertEqual(w["summary"], "Waiting for your review: Structure narrative arc and timing")
+        self.assertEqual(w["focus"], {"id": "pitch", "title": "Structure narrative arc and timing",
+                                      "kind": "review"})
+        self.assertEqual(w["review"], [{"id": "pitch", "title": "Structure narrative arc and timing"}])
+        self.assertEqual(w["blocked"][0], {
+            "id": "demo", "title": "Coordinate the demo",
+            "blockedBy": [{"id": "pitch", "title": "Structure narrative arc and timing",
+                           "status": "in-review"}],
+        })
+        self.assertEqual([b["id"] for b in w["blocked"]], ["demo", "end"])
+
+    def test_pending_decision(self):
+        from taskgraph.models import RequestDecision
+
+        self.svc.submit(H, [RequestDecision(task_id="pitch", question="Investors or customers?")], "ask")
+        self.engine.tick()
+        w = self.engine.status()["waiting"]
+        self.assertEqual(w["reason"], "decision")
+        self.assertEqual(w["decisions"], [{"id": "pitch", "title": "Structure narrative arc and timing",
+                                           "question": "Investors or customers?"}])
+        self.assertEqual(w["focus"]["kind"], "decision")
+        self.assertIn("Waiting for your decision", w["summary"])
+
+    def test_blocked_on_a_task_nobody_works_on(self):
+        self.svc.submit(H, [CreateTask(id="x", title="Outside work"),
+                            CreateTask(id="y", title="Needs x", blocked_by=["x"])])
+        self.svc.submit(H, [SetStatus(task_id="x", status="running")])  # e.g. a human on it
+        self.engine.tick()
+        self.finish("pitch")
+        self.svc.submit(H, [SetStatus(task_id="pitch", status="closed")])
+        self.svc.submit(H, [SetStatus(task_id="demo", status="running")])
+        w = self.engine.status()["waiting"]
+        self.assertEqual(w["reason"], "blocked")
+        self.assertTrue(w["summary"].startswith("Blocked: "), w["summary"])
+        self.assertIn({"id": "y", "title": "Needs x", "blockedBy": [
+            {"id": "x", "title": "Outside work", "status": "running"}]}, w["blocked"])
+
+    def test_tasks_assigned_to_people_are_left_alone(self):
+        from taskgraph.models import AssignTask
+
+        self.svc.submit(H, [AssignTask(task_id="pitch", assignee=Actor(type="human", id="kyrill"))])
+        self.assertEqual(self.engine.tick(), [])
+        self.assertEqual(self.engine.queue(), [])
+        w = self.engine.status()["waiting"]
+        self.assertEqual(w["reason"], "assigned-to-person")
+        self.assertEqual(w["assignedToPeople"], [{"id": "pitch", "title": "Structure narrative arc and timing",
+                                                  "assignee": "kyrill"}])
+        self.assertEqual(w["focus"]["kind"], "assigned")
+        self.svc.submit(H, [AssignTask(task_id="pitch", assignee=Actor(type="agent", id="agent"))])
+        self.assertEqual([r.task_id for r in self.engine.tick()], ["pitch"])
+        self.assertEqual(self.svc.task("pitch")["assignee"], {"type": "agent", "id": "agent"})
+
+    def test_ask_all_holds_the_queue(self):
+        self.svc.update_settings(H, autonomy="ask-all")
+        self.assertEqual(self.engine.tick(), [])
+        w = self.engine.status()["waiting"]
+        self.assertEqual((w["reason"], w["autonomy"]), ("ask-all", "ask-all"))
+        self.assertIn("ask-all", w["summary"])
+
+    def test_run_limit_and_runs_not_restarted(self):
+        self.svc.submit(H, [CreateTask(id="extra", title="Extra")])
+        self.engine.tick()  # one slot: pitch
+        w = self.engine.status()["waiting"]
+        self.assertEqual((w["reason"], w["atRunLimit"]), ("run-limit", True))
+        self.finish("pitch", "failed")
+        self.engine.tick()  # extra starts; failed pitch is not retried
+        self.finish("extra")
+        w = self.engine.status()["waiting"]
+        self.assertEqual(w["needsRestart"], [{"id": "pitch", "title": "Structure narrative arc and timing",
+                                              "lastRun": "failed"}])
+        self.assertEqual(w["reason"], "review")  # extra is in review
+        self.assertIn("Not restarted automatically", w["summary"])
+
+
 class RestTest(Base):
     def setUp(self):
         super().setUp()
@@ -441,6 +548,8 @@ class RestTest(Base):
         self.assertEqual((body["state"], body["activeRuns"]), ("stopped", []))
         self.assertEqual(self.http.post("/api/engine/start").status_code, 200)
         self.assertIn("activeRuns", self.http.get("/api/taskgraph/graph").json())
+        waiting = self.http.get("/api/engine").json()["waiting"]
+        self.assertLessEqual({"reason", "summary", "focus", "review", "decisions", "blocked"}, set(waiting))
 
 
 if __name__ == "__main__":

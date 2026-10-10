@@ -38,6 +38,7 @@ from issues import IssueError, IssueService, agent_author
 from memory.models import MemorySource
 from memory.service import DEFAULT_ID, MemoryService, MemoryServiceError, user_key
 from taskgraph.models import (
+    AGENT_ASSIGNEE,
     Actor,
     AddComment,
     AddRelation,
@@ -345,12 +346,27 @@ _APPLY_CHANGES_SCHEMA = {
 }
 
 
+def with_default_assignee(ctx: ToolContext, ops: list[Op]) -> list[Op]:
+    """Tasks agents create go to "Agent" (AGENT_ASSIGNEE) unless the op names an
+    assignee (an explicit `assignee: null` stays unassigned). Decision tasks
+    stay unassigned: the owner answers them. Applied here, in the agent tool
+    layer, so tasks humans create in the GUI keep whatever they set."""
+    out: list[Op] = []
+    for op in ops:
+        if (isinstance(op, CreateTask) and op.kind != "decision"
+                and "assignee" not in op.model_fields_set):
+            op = op.model_copy(update={"assignee": AGENT_ASSIGNEE})
+        out.append(op)
+    return out
+
+
 def graph_write_tools(ctx: ToolContext) -> list[ToolDef]:
     def apply_changes(ops: list[Op], reason: str) -> dict:
         """Apply a batch of ops atomically (all or nothing). Later ops may
         reference tasks created earlier in the batch by their id. Every change
-        needs a reason."""
-        return ctx.submit(ops, reason)
+        needs a reason. task.create ops without an assignee go to "Agent"
+        (decision tasks stay unassigned)."""
+        return ctx.submit(with_default_assignee(ctx, ops), reason)
 
     def create_task(
         title: str,
@@ -362,17 +378,22 @@ def graph_write_tools(ctx: ToolContext) -> list[ToolDef]:
         parent_id: str | None = None,
         start_date: str | None = None,
         end_date: str | None = None,
+        assignee_type: Literal["human", "agent"] | None = None,
+        assignee_id: str | None = None,
     ) -> dict:
-        """Create a task. blocked_by lists tasks that must close first."""
+        """Create a task. blocked_by lists tasks that must close first. Without
+        an assignee, start/task/end tasks go to "Agent" (agent id 'agent');
+        decision tasks stay unassigned (the owner answers them)."""
+        who = {"assignee": {"type": assignee_type, "id": assignee_id}} if assignee_type and assignee_id else {}
         try:
             op = CreateTask(
                 id=id, title=title, kind=kind, description=description,
                 blocked_by=blocked_by or [], parent_id=parent_id,
-                start_date=start_date, end_date=end_date,
+                start_date=start_date, end_date=end_date, **who,
             )
         except ValidationError as e:
             raise TaskGraphError("invalid", _short_validation(e)) from None
-        return ctx.submit([op], reason)
+        return ctx.submit(with_default_assignee(ctx, [op]), reason)
 
     def update_task(task_id: str, fields: dict, reason: str) -> dict:
         """Update fields: title, kind, description, parentId, startDate, endDate, progress, artifacts."""
@@ -596,8 +617,10 @@ def engine_tools(ctx: ToolContext) -> list[ToolDef]:
         return ctx.need("engine")
 
     def engine_status() -> dict:
-        """Engine state (running/stopped), active runs, concurrency limit and the
-        queue of tasks it would start next."""
+        """Engine state (running/stopped), active runs, concurrency limit, the
+        queue of tasks it would start next, and `waiting`: why it is idle
+        (tasks in review, pending decisions, blocked tasks, tasks it will not
+        restart, autonomy or the run limit) with a one-line `summary`."""
         return engine().status()
 
     def engine_start(reason: str) -> dict:

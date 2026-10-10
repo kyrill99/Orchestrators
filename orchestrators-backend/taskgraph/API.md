@@ -59,7 +59,7 @@ Humans' changes always apply. Humans approve/reject proposals.
 | `POST /changesets/{id}/review` | `{actor, approve, note}` |
 | `PATCH /settings` | `{actor, name?, autonomy?}` |
 
-Engine (`/api/engine`, see below): `GET` → `{state, running, runner, maxRuns, activeRuns[], queue[], updatedAt, updatedBy, reason}`,
+Engine (`/api/engine`, see below): `GET` → `{state, running, runner, maxRuns, activeRuns[], queue[], waiting, updatedAt, updatedBy, reason}`,
 `POST /start {reason?}`, `POST /stop {reason?, stopRuns?}` (the signed-in user is recorded).
 
 Live: run steps and scratchpad changes are also published on the SSE channel `runs`
@@ -174,11 +174,27 @@ marks its unfinished runs `lost` with the note "interrupted: ...".
 While running, the engine starts runs (agent `ENGINE_AGENT_ID`, default `gemini`) on
 ready work tasks until `ENGINE_MAX_RUNS` (2) are active, checking every
 `ENGINE_INTERVAL` (2 s). Queued: kind `task`, ready (open, blockers closed, no pending
-decision), no active run, and either never run or last run `lost` (fewer than
+decision), not assigned to a person, no active run, and either never run or last run `lost` (fewer than
 `ENGINE_MAX_ATTEMPTS`, 3, in a row). Failed or stopped tasks wait for a human or the
 planner to restart them, so a failing task cannot loop; succeeded tasks are in review.
 The state (`engine_state` table) survives restarts; default stopped. The engine refuses
 to start with the `record` runner.
+
+`status()["waiting"]` explains an idle engine: `{reason, summary, focus, review[],
+decisions[], proposals[], blocked[], assignedToPeople[], needsRestart[], autonomy,
+atRunLimit}`. `reason` is the main cause (`ask-all`, `run-limit`, `review`, `decision`,
+`proposal`, `assigned-to-person`, `needs-restart`, `blocked`, or null), `summary` one line for people ("Waiting for your
+review: ..."), `focus` `{id, title, kind}` the task to open first. `blocked` lists open
+tasks with `blockedBy: [{id, title, status}]`; `needsRestart` ready tasks the engine
+will not retry (last run failed, stopped, or lost `ENGINE_MAX_ATTEMPTS` times).
+
+Tasks agents create through the tool table (`create_task`, `apply_changes`,
+`create_subtask`) default to `assignee {type: agent, id: agent}` (the GUI picker's
+"Agent") unless the op names one (`assignee: null` keeps it unassigned); decision tasks
+stay unassigned. The REST `POST /changes` (the GUI) applies no default. Starting a run
+keeps an existing agent assignee (the run records the worker, e.g. `gemini`); an
+unassigned or person-assigned task is assigned to the run's agent. The engine does not
+queue tasks assigned to a person.
 
 The owner loop (`loop.py`: `POST /tasks/{id}/review`, `POST /tasks/{id}/decide`,
 `POST /autostart`) starts runs through the same `Engine.dispatch` (same queue and

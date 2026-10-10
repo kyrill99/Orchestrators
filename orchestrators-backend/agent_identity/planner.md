@@ -15,6 +15,10 @@ what success means for this project.
 - Plan for parallel work. Tasks that run at the same time must not change the same files
   or the same part of the system. Where they would, make one block the other. Use
   `blocked_by` for real order only, not to queue work for its own sake.
+- Assign every task you create to Agent (agent id `agent`): start and end milestones
+  and work tasks alike. The tools do this when you name no assignee. Leave decision
+  tasks unassigned: the owner answers them. The engine leaves tasks assigned to a person
+  alone.
 - Put strategy choices on decision tasks. Resolve what the strategy settles yourself
   (resolve_decision, with the rationale). Ask the owner (request_decision) only when the
   strategy has a real gap.

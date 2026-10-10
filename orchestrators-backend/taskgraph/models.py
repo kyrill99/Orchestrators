@@ -44,6 +44,11 @@ class Actor(Model):
         return self.id if self.type == "human" else f"agent {self.id}"
 
 
+# The "Agent" option in the GUI's assignee picker (lib/assignees.ts): tasks
+# agents create default to it. Whichever worker runs the task, it stays "Agent".
+AGENT_ASSIGNEE = Actor(type="agent", id="agent")
+
+
 class Artifact(Model):
     path: str
     label: str | None = None

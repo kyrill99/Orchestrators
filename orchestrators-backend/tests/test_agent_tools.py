@@ -89,6 +89,73 @@ class AgentToolsTest(unittest.TestCase):
         self.assertIn("error", self.tools.dispatch("nope", {}))
 
 
+class DefaultAssigneeTest(unittest.TestCase):
+    """Tasks agents create go to "Agent" (the GUI picker's agent) unless told otherwise."""
+
+    AGENT = {"type": "agent", "id": "agent"}
+
+    def setUp(self):
+        self.tg = TaskGraphService()
+        self.tools = AgentTools(None, self.tg, agent_id="planner", project_id=P, user_id=U)
+
+    def assignee(self, task_id):
+        return self.tg.task(task_id)["assignee"]
+
+    def test_create_task_defaults_to_agent(self):
+        for kind in ("start", "task", "end"):
+            self.tools.call("create_task", {"id": kind, "title": kind, "kind": kind, "reason": "plan"})
+            self.assertEqual(self.assignee(kind), self.AGENT, kind)
+
+    def test_explicit_assignee_wins(self):
+        self.tools.call("create_task", {"id": "h", "title": "H", "reason": "plan",
+                                        "assignee_type": "human", "assignee_id": "lorenz"})
+        self.assertEqual(self.assignee("h"), {"type": "human", "id": "lorenz"})
+        self.tools.call("apply_changes", {"reason": "plan", "ops": [
+            {"op": "task.create", "id": "x", "title": "X", "assignee": {"type": "agent", "id": "codex"}},
+            {"op": "task.create", "id": "y", "title": "Y", "assignee": None},
+        ]})
+        self.assertEqual(self.assignee("x"), {"type": "agent", "id": "codex"})
+        self.assertIsNone(self.assignee("y"))  # explicitly unassigned
+
+    def test_decision_tasks_stay_unassigned(self):
+        self.tools.call("create_task", {"id": "d", "title": "Pick", "kind": "decision", "reason": "plan"})
+        self.tools.call("apply_changes", {"reason": "plan", "ops": [
+            {"op": "task.create", "id": "d2", "title": "Pick 2", "kind": "decision"},
+            {"op": "task.create", "id": "w", "title": "Work", "blockedBy": ["d2"]},
+        ]})
+        self.assertIsNone(self.assignee("d"))
+        self.assertIsNone(self.assignee("d2"))
+        self.assertEqual(self.assignee("w"), self.AGENT)
+
+    def test_humans_in_the_gui_are_not_forced(self):
+        self.tg.submit(H, [CreateTask(id="g", title="Mine")], "gui")
+        self.assertIsNone(self.assignee("g"))
+
+    def test_worker_subtasks(self):
+        from services.agent_tools import ToolContext, by_name, worker_tools
+
+        self.tg.submit(H, [CreateTask(id="t", title="T")])
+        ctx = ToolContext(taskgraph=self.tg, actor=Actor(type="agent", id="gemini"))
+        by_name(worker_tools(ctx, run_id="r", task_id="t"))["create_subtask"].call(
+            {"id": "sub", "title": "Sub", "reason": "follow-up"})
+        self.assertEqual(self.assignee("sub"), self.AGENT)
+        self.assertEqual(self.tg.task("sub")["parentId"], "t")
+
+    def test_a_run_keeps_the_agent_assignee(self):
+        from taskgraph import RunManager
+
+        self.tools.call("create_task", {"id": "a", "title": "A", "reason": "plan"})
+        self.tg.submit(H, [CreateTask(id="b", title="B"),
+                           CreateTask(id="c", title="C", assignee=Actor(type="human", id="kyrill"))])
+        runs = RunManager(self.tg)
+        for task_id in ("a", "b", "c"):
+            runs.start(H, task_id, "go", agent_id="gemini")
+        self.assertEqual(self.assignee("a"), self.AGENT)  # stays "Agent"
+        self.assertEqual(self.assignee("b"), {"type": "agent", "id": "gemini"})  # was unassigned
+        self.assertEqual(self.assignee("c"), {"type": "agent", "id": "gemini"})  # a human handed it over
+        self.assertEqual(self.tg.runs(task_id="a")[0].agent.id, "gemini")
+
+
 class AgentChatToolLoopTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
