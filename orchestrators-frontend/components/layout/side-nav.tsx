@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { MiniGraph } from "@/components/layout/mini-graph";
+import { ProjectList } from "@/components/layout/project-list";
 import { SystemStats } from "@/components/layout/system-stats";
 import { UpdateControl } from "@/components/layout/update-control";
 
@@ -64,6 +65,8 @@ export function SideNav() {
           );
         })}
       </nav>
+
+      <ProjectList />
 
       <div className="mt-auto flex flex-col gap-3">
         <MiniGraph />
