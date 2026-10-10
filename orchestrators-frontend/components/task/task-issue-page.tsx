@@ -1,19 +1,19 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { ArrowLeft, Ban, Bot, User, Activity } from "lucide-react";
-import type { Task, TaskActivity } from "@/lib/fixtures";
+import type { Task, TaskActivity, TaskStatus } from "@/lib/fixtures";
 import {
   loadAssignee,
   saveAssignee,
   type AssigneeId,
 } from "@/lib/assignees";
-import { fetchTask } from "@/lib/taskgraph-api";
+import { fetchTask, setTaskStatus } from "@/lib/taskgraph-api";
 import { AssigneePicker } from "@/components/task/assignee-picker";
 import { OwnerActions } from "@/components/task/owner-actions";
 import { RunControl } from "@/components/task/run-control";
-import { StatusBadge } from "@/components/task/status-badge";
+import { StatusPicker } from "@/components/task/status-picker";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { HereLine, TypingLine } from "@/components/presence/presence";
@@ -21,11 +21,15 @@ import { notifyTyping, useAnnouncePresence } from "@/lib/presence";
 
 type FeedItem = { kind: "activity"; at: string; activity: TaskActivity };
 
+const STATUSES: TaskStatus[] = ["open", "running", "in-review", "closed"];
+
 export function TaskIssuePage({ id }: { id: string }) {
   const [task, setTask] = useState<Task | null>(null);
   const [related, setRelated] = useState<Task[]>([]);
   const [blockers, setBlockers] = useState<Task[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [statusError, setStatusError] = useState<string | null>(null);
+  const [statusBusy, setStatusBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [assignee, setAssignee] = useState<AssigneeId>("unassigned");
   const [comment, setComment] = useState("");
@@ -73,6 +77,31 @@ export function TaskIssuePage({ id }: { id: string }) {
   function onAssigneeChange(next: AssigneeId) {
     setAssignee(next);
     saveAssignee(id, next);
+  }
+
+  const onRunStatusChange = useCallback((status: string) => {
+    if (!STATUSES.includes(status as TaskStatus)) return;
+    setTask((prev) =>
+      prev && prev.status !== status
+        ? { ...prev, status: status as TaskStatus }
+        : prev,
+    );
+  }, []);
+
+  async function onStatusChange(next: TaskStatus) {
+    if (!task || task.status === next || statusBusy) return;
+    const previous = task.status;
+    setStatusBusy(true);
+    setStatusError(null);
+    setTask({ ...task, status: next });
+    try {
+      await setTaskStatus(id, next);
+    } catch (err) {
+      setTask({ ...task, status: previous });
+      setStatusError(err instanceof Error ? err.message : "Could not update status");
+    } finally {
+      setStatusBusy(false);
+    }
   }
 
   if (loading) {
@@ -138,17 +167,29 @@ export function TaskIssuePage({ id }: { id: string }) {
           </Link>
 
           <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1">
-            <StatusBadge status={task.status} />
+            <div className="w-[160px]">
+              <StatusPicker
+                value={task.status}
+                onChange={onStatusChange}
+                disabled={statusBusy}
+              />
+            </div>
             <span className="font-mono text-[11px] text-muted-foreground">
               {task.id}
             </span>
             <HereLine people={here} />
             {task.kind === "task" ? (
               <div className="ml-auto">
-                <RunControl taskId={task.id} />
+                <RunControl
+                  taskId={task.id}
+                  onStatusChange={onRunStatusChange}
+                />
               </div>
             ) : null}
           </div>
+          {statusError ? (
+            <p className="mb-2 text-xs text-destructive">{statusError}</p>
+          ) : null}
 
           <h1 className="text-xl font-semibold tracking-[-0.02em] text-foreground">
             {task.title}
@@ -168,9 +209,11 @@ export function TaskIssuePage({ id }: { id: string }) {
               Properties
             </h2>
             <div className="flex flex-col gap-0.5">
-              <div className="flex items-center gap-2 rounded-md px-1.5 py-1.5 text-[13px]">
-                <StatusBadge status={task.status} />
-              </div>
+              <StatusPicker
+                value={task.status}
+                onChange={onStatusChange}
+                disabled={statusBusy}
+              />
               <AssigneePicker value={assignee} onChange={onAssigneeChange} />
             </div>
           </section>
@@ -232,9 +275,11 @@ export function TaskIssuePage({ id }: { id: string }) {
             Properties
           </h2>
           <div className="flex flex-col gap-0.5">
-            <div className="flex items-center gap-2 rounded-md px-1.5 py-1.5 text-[13px]">
-              <StatusBadge status={task.status} />
-            </div>
+            <StatusPicker
+              value={task.status}
+              onChange={onStatusChange}
+              disabled={statusBusy}
+            />
             <AssigneePicker value={assignee} onChange={onAssigneeChange} />
           </div>
         </section>

@@ -1,22 +1,21 @@
 "use client";
 
-import { useLayoutEffect, useMemo, useRef } from "react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import {
-  Flag,
-  FlaskConical,
-  GitBranch,
-  Rocket,
-  type LucideIcon,
-} from "lucide-react";
-import type { Task, TaskKind, TaskStatus } from "@/lib/fixtures";
+import { getAssignee, loadAssignee } from "@/lib/assignees";
+import type { Task, TaskStatus } from "@/lib/fixtures";
 import { useTaskGraph } from "@/lib/use-task-graph";
 import { cn } from "@/lib/utils";
+import { AssigneeAvatar } from "@/components/task/assignee-picker";
+import { StatusIcon } from "@/components/task/status-icon";
 
 const DAY_MS = 86_400_000;
-const DAY_WIDTH = 36;
+const MIN_DAY_WIDTH = 36;
+const MIN_RANGE_DAYS = 28;
 const ROW_HEIGHT = 56;
 const HEADER_HEIGHT = 56;
+const CHART_PAD_X = 24; // px-6
+const MIN_BAR_WIDTH = 200;
 const MONTH_NAMES = [
   "January",
   "February",
@@ -31,13 +30,6 @@ const MONTH_NAMES = [
   "November",
   "December",
 ];
-
-const kindIcon: Record<TaskKind, LucideIcon> = {
-  start: Flag,
-  task: FlaskConical,
-  decision: GitBranch,
-  end: Rocket,
-};
 
 const statusAccent: Record<TaskStatus, string> = {
   open: "",
@@ -60,8 +52,8 @@ function daysBetween(a: number, b: number) {
 }
 
 function buildRange(items: Task[], todayIso: string) {
+  const today = parseDay(todayIso);
   if (!items.length) {
-    const today = parseDay(todayIso);
     return {
       rangeStart: addDays(today, -7),
       rangeEnd: addDays(today, 21),
@@ -70,8 +62,11 @@ function buildRange(items: Task[], todayIso: string) {
   }
   const starts = items.map((t) => parseDay(t.startDate));
   const ends = items.map((t) => parseDay(t.endDate));
-  const rangeStart = addDays(Math.min(...starts), -3);
-  const rangeEnd = addDays(Math.max(...ends), 5);
+  let rangeStart = addDays(Math.min(...starts, today), -3);
+  let rangeEnd = addDays(Math.max(...ends, today), 5);
+  if (daysBetween(rangeStart, rangeEnd) < MIN_RANGE_DAYS) {
+    rangeEnd = addDays(rangeStart, MIN_RANGE_DAYS);
+  }
   return {
     rangeStart,
     rangeEnd,
@@ -98,7 +93,9 @@ function orderTasks(tasks: Task[]): Task[] {
   }
   for (const t of tasks) walk(t.id);
   return [...tasks].sort(
-    (a, b) => (depth.get(a.id) ?? 0) - (depth.get(b.id) ?? 0) || a.title.localeCompare(b.title),
+    (a, b) =>
+      (depth.get(a.id) ?? 0) - (depth.get(b.id) ?? 0) ||
+      a.title.localeCompare(b.title),
   );
 }
 
@@ -136,9 +133,17 @@ function weekTicks(rangeStart: number, totalDays: number) {
   return ticks;
 }
 
+/** Rough content width so long titles stay visible without clipping the card. */
+function estimateBarContentWidth(task: Task) {
+  const idW = Math.max(task.id.length, 4) * 6.5;
+  const titleW = task.title.length * 7.2;
+  return 20 + idW + 14 + titleW + 28 + 20;
+}
+
 export function TimelineView() {
   const scrollerRef = useRef<HTMLDivElement>(null);
   const todayRef = useRef<HTMLDivElement>(null);
+  const [viewportWidth, setViewportWidth] = useState(0);
   const { data, loading, error } = useTaskGraph();
   const todayIso = useMemo(() => new Date().toISOString().slice(0, 10), []);
 
@@ -148,7 +153,6 @@ export function TimelineView() {
   );
 
   const { rangeStart, rangeEnd, totalDays } = buildRange(ordered, todayIso);
-  const width = totalDays * DAY_WIDTH;
   const months = monthSpans(rangeStart, rangeEnd);
   const ticks = weekTicks(rangeStart, totalDays);
   const todayOffset = daysBetween(rangeStart, parseDay(todayIso));
@@ -156,12 +160,47 @@ export function TimelineView() {
 
   useLayoutEffect(() => {
     const scroller = scrollerRef.current;
+    if (!scroller) return;
+    const measure = () => setViewportWidth(scroller.clientWidth);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(scroller);
+    return () => observer.disconnect();
+  }, [ordered.length]);
+
+  const outerPad = 48; // p-4 / sm:p-6 approx; use min of measured
+  const available =
+    viewportWidth > 0 ? Math.max(viewportWidth - outerPad - CHART_PAD_X * 2, 320) : 0;
+
+  const dayWidth = Math.max(
+    MIN_DAY_WIDTH,
+    available > 0 ? available / totalDays : MIN_DAY_WIDTH,
+  );
+
+  const bars = useMemo(() => {
+    return ordered.map((task) => {
+      const start = daysBetween(rangeStart, parseDay(task.startDate));
+      const duration =
+        daysBetween(parseDay(task.startDate), parseDay(task.endDate)) + 1;
+      const scheduleWidth = Math.max(duration * dayWidth, MIN_BAR_WIDTH);
+      const width = Math.max(scheduleWidth, estimateBarContentWidth(task));
+      return { task, start, width, left: start * dayWidth };
+    });
+  }, [ordered, rangeStart, dayWidth]);
+
+  const contentWidth = Math.max(
+    totalDays * dayWidth,
+    ...bars.map((b) => b.left + b.width),
+    available,
+  );
+
+  useLayoutEffect(() => {
+    const scroller = scrollerRef.current;
     const today = todayRef.current;
-    if (!scroller || !today) return;
-    const target =
-      today.offsetLeft - scroller.clientWidth * 0.35;
+    if (!scroller || !today || viewportWidth === 0) return;
+    const target = today.offsetLeft - scroller.clientWidth * 0.35;
     scroller.scrollLeft = Math.max(0, target);
-  }, [todayOffset]);
+  }, [todayOffset, contentWidth, viewportWidth]);
 
   if (loading && !data) {
     return (
@@ -191,23 +230,30 @@ export function TimelineView() {
   }
 
   return (
-    <div ref={scrollerRef} className="h-full overflow-auto bg-canvas">
-      <div className="inline-block min-w-full p-4 sm:p-6">
+    <div ref={scrollerRef} className="h-full w-full overflow-auto bg-canvas">
+      <div className="box-border min-h-full w-full min-w-full p-4 sm:p-6">
         <div
-          className="relative rounded-xl border border-border bg-background shadow-[0_1px_2px_rgba(0,0,0,0.04)]"
-          style={{ width: width + 48 }}
+          className="relative w-full rounded-xl border border-border bg-background shadow-[0_1px_2px_rgba(0,0,0,0.04)]"
+          style={{ minWidth: contentWidth + CHART_PAD_X * 2 }}
         >
           <div
             className="sticky top-0 z-20 border-b border-border bg-background/95 backdrop-blur-sm"
             style={{ height: HEADER_HEIGHT }}
           >
-            <div className="relative h-full px-6 pt-2" style={{ width }}>
+            <div
+              className="relative h-full pt-2"
+              style={{
+                width: contentWidth,
+                paddingLeft: CHART_PAD_X,
+                paddingRight: CHART_PAD_X,
+              }}
+            >
               <div className="relative mb-1 h-4">
                 {months.map((month) => (
                   <span
                     key={`${month.label}-${month.start}`}
                     className="absolute text-[11px] font-medium text-muted-foreground"
-                    style={{ left: month.start * DAY_WIDTH }}
+                    style={{ left: month.start * dayWidth }}
                   >
                     {month.label}
                   </span>
@@ -218,7 +264,7 @@ export function TimelineView() {
                   <span
                     key={tick.offset}
                     className="absolute text-[11px] tabular-nums text-muted-foreground/80"
-                    style={{ left: tick.offset * DAY_WIDTH }}
+                    style={{ left: tick.offset * dayWidth }}
                   >
                     {tick.day}
                   </span>
@@ -227,17 +273,24 @@ export function TimelineView() {
             </div>
           </div>
 
-          <div className="relative px-6 py-4" style={{ width }}>
+          <div
+            className="relative py-4"
+            style={{
+              width: contentWidth,
+              paddingLeft: CHART_PAD_X,
+              paddingRight: CHART_PAD_X,
+            }}
+          >
             <div
-              className="pointer-events-none absolute inset-y-0 left-6"
-              style={{ width }}
+              className="pointer-events-none absolute inset-y-0"
+              style={{ left: CHART_PAD_X, width: contentWidth }}
               aria-hidden
             >
               {ticks.map((tick) => (
                 <div
                   key={`grid-${tick.offset}`}
                   className="absolute top-0 bottom-0 border-l border-dashed border-border/80"
-                  style={{ left: tick.offset * DAY_WIDTH }}
+                  style={{ left: tick.offset * dayWidth }}
                 />
               ))}
             </div>
@@ -245,7 +298,7 @@ export function TimelineView() {
             <div
               ref={todayRef}
               className="pointer-events-none absolute top-0 bottom-4 z-10"
-              style={{ left: 24 + todayOffset * DAY_WIDTH }}
+              style={{ left: CHART_PAD_X + todayOffset * dayWidth }}
               aria-hidden
             >
               <div className="absolute top-1 left-1/2 flex -translate-x-1/2 items-center justify-center">
@@ -260,19 +313,10 @@ export function TimelineView() {
               className="relative"
               style={{ minHeight: ordered.length * ROW_HEIGHT }}
             >
-              {ordered.map((task, index) => {
-                const start = daysBetween(
-                  rangeStart,
-                  parseDay(task.startDate),
-                );
-                const duration =
-                  daysBetween(
-                    parseDay(task.startDate),
-                    parseDay(task.endDate),
-                  ) + 1;
-                const Icon = kindIcon[task.kind];
+              {bars.map(({ task, left, width }, index) => {
                 const openEnded =
                   task.status === "open" || task.status === "running";
+                const assignee = getAssignee(loadAssignee(task.id));
 
                 return (
                   <li
@@ -283,13 +327,13 @@ export function TimelineView() {
                     <Link
                       href={`/tasks/${task.id}`}
                       className={cn(
-                        "absolute top-2.5 flex h-10 items-center gap-2 overflow-hidden rounded-full bg-neutral-100 pr-4 pl-2 text-left text-foreground transition-[box-shadow,transform] hover:-translate-y-px hover:shadow-md",
+                        "absolute top-2.5 flex h-9 items-center gap-2 rounded-full bg-neutral-100 py-0 pr-2.5 pl-2.5 text-left text-foreground transition-[box-shadow,transform] hover:-translate-y-px hover:shadow-md",
                         statusAccent[task.status],
                         openEnded && "border border-dashed border-neutral-300",
                       )}
                       style={{
-                        left: start * DAY_WIDTH,
-                        width: Math.max(duration * DAY_WIDTH, 148),
+                        left,
+                        width,
                         zIndex: 1,
                       }}
                       title={`${task.title} · ${task.startDate} → ${task.endDate}`}
@@ -301,29 +345,22 @@ export function TimelineView() {
                         }}
                         aria-hidden
                       />
-                      <span
-                        className={cn(
-                          "relative z-[1] flex size-6 shrink-0 items-center justify-center rounded-full bg-white shadow-sm",
-                          task.status === "running" &&
-                            "ring-2 ring-sky-400/50",
-                          task.status === "in-review" &&
-                            "ring-2 ring-amber-400/50",
-                        )}
-                      >
-                        <Icon
-                          className="size-3.5 text-foreground/80"
-                          strokeWidth={1.75}
-                        />
-                        {task.status === "in-review" ||
-                        task.status === "running" ? (
-                          <span className="absolute -top-0.5 -right-0.5 size-1.5 rounded-full bg-rose-500" />
-                        ) : null}
+                      <span className="relative z-[1] shrink-0 font-mono text-[11px] text-muted-foreground tabular-nums">
+                        {task.id}
                       </span>
-                      <span className="relative z-[1] truncate text-[13px] font-medium">
+                      <StatusIcon
+                        status={task.status}
+                        className="relative z-[1] size-3.5 shrink-0"
+                      />
+                      <span className="relative z-[1] min-w-0 flex-1 whitespace-nowrap text-[13px] font-medium text-foreground">
                         {task.title}
                       </span>
+                      <AssigneeAvatar
+                        assignee={assignee}
+                        className="relative z-[1] ml-auto size-5 shrink-0 text-[10px]"
+                      />
                     </Link>
-                    {index < ordered.length - 1 ? (
+                    {index < bars.length - 1 ? (
                       <div
                         className="pointer-events-none absolute right-0 bottom-0 left-0 border-b border-border/50"
                         aria-hidden

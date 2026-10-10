@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   Background,
@@ -14,18 +14,32 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { nodeTypes, type GraphNodeData } from "@/components/graph/nodes";
+import { ASSIGNEE_CHANGED_EVENT, loadAssignee } from "@/lib/assignees";
 import { fetchActiveRuns } from "@/lib/api";
 import { layoutGraph } from "@/lib/taskgraph-api";
 import { useTaskGraph } from "@/lib/use-task-graph";
 
 export function TaskGraph() {
   const router = useRouter();
-  const { data, error, loading } = useTaskGraph();
+  const { data, error, loading, reload } = useTaskGraph();
+  /** Bumps when local assignees change so nodes rebuild. */
+  const [assigneeTick, setAssigneeTick] = useState(0);
+
+  useEffect(() => {
+    const onAssignee = () => setAssigneeTick((n) => n + 1);
+    window.addEventListener(ASSIGNEE_CHANGED_EVENT, onAssignee);
+    window.addEventListener("storage", onAssignee);
+    return () => {
+      window.removeEventListener(ASSIGNEE_CHANGED_EVENT, onAssignee);
+      window.removeEventListener("storage", onAssignee);
+    };
+  }, []);
 
   const built = useMemo(() => {
     const tasks = data?.tasks ?? [];
     const edges = data?.edges ?? [];
     const positions = layoutGraph(tasks, edges);
+    const seq = data?.seq ?? 0;
     const nodes: Node[] = tasks.map((task) => ({
       id: task.id,
       type: task.kind,
@@ -34,7 +48,9 @@ export function TaskGraph() {
         title: task.title,
         kind: task.kind,
         status: task.status,
-      } satisfies GraphNodeData,
+        assigneeId: loadAssignee(task.id),
+        seq,
+      } satisfies GraphNodeData & { seq: number },
     }));
     const flowEdges: Edge[] = edges.map((edge) => ({
       id: edge.id,
@@ -43,27 +59,53 @@ export function TaskGraph() {
       type: "smoothstep",
       style: { stroke: "#e4e4e7", strokeWidth: 1.25 },
     }));
-    return { nodes, edges: flowEdges };
-  }, [data]);
+    return { nodes, edges: flowEdges, seq };
+  }, [data, assigneeTick]);
 
   const [nodes, setNodes, onNodesChange] = useNodesState(built.nodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(built.edges);
 
   useEffect(() => {
-    setNodes(built.nodes);
+    setNodes((current) => {
+      const prevAgent = new Map(
+        current.map((node) => [node.id, (node.data as GraphNodeData).agent]),
+      );
+      return built.nodes.map((node) => {
+        const agent = prevAgent.get(node.id);
+        return agent
+          ? { ...node, data: { ...(node.data as GraphNodeData), agent } }
+          : node;
+      });
+    });
     setEdges(built.edges);
   }, [built, setNodes, setEdges]);
 
-  // Mark tasks an agent is working on (from the live backend graph).
+  useEffect(() => {
+    const onFocus = () => {
+      setAssigneeTick((n) => n + 1);
+      void reload();
+    };
+    window.addEventListener("focus", onFocus);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") onFocus();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [reload]);
+
   useEffect(() => {
     const refresh = () =>
       fetchActiveRuns().then((runs) => {
         const agentFor = new Map(runs.map((run) => [run.taskId, run.agent.id]));
         setNodes((current) =>
           current.map((node) => {
+            const data = node.data as GraphNodeData;
             const agent = agentFor.get(node.id);
-            if ((node.data as GraphNodeData).agent === agent) return node;
-            return { ...node, data: { ...node.data, agent } };
+            if (data.agent === agent) return node;
+            return { ...node, data: { ...data, agent } };
           }),
         );
       });
@@ -110,6 +152,7 @@ export function TaskGraph() {
   return (
     <div className="h-full w-full bg-canvas">
       <ReactFlow
+        key={`${built.seq}-${assigneeTick}`}
         nodes={nodes}
         edges={edges}
         onNodesChange={onNodesChange}

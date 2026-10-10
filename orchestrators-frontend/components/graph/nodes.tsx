@@ -2,7 +2,9 @@
 
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import { Bot } from "lucide-react";
+import { getAssignee, type AssigneeId } from "@/lib/assignees";
 import { StatusBadge } from "@/components/task/status-badge";
+import { AssigneeAvatar } from "@/components/task/assignee-picker";
 import { AvatarStack } from "@/components/presence/presence";
 import { usePresenceAt } from "@/lib/presence";
 import type { TaskKind, TaskStatus } from "@/lib/fixtures";
@@ -12,6 +14,8 @@ export type GraphNodeData = {
   title: string;
   kind: TaskKind;
   status: TaskStatus;
+  /** Local / picker assignee for this task. */
+  assigneeId?: AssigneeId;
   /** Agent with an active run on this task (live backend graph). */
   agent?: string;
 };
@@ -24,6 +28,33 @@ function NodePresence({ id }: { id: string }) {
     <span className="pointer-events-none absolute -top-2.5 -right-2 z-10">
       <AvatarStack people={people} size={18} max={3} />
     </span>
+  );
+}
+
+function NodeMeta({ data }: { data: GraphNodeData }) {
+  const assignee = getAssignee(data.assigneeId ?? "unassigned");
+  const showAssignee = assignee.kind !== "unassigned";
+
+  return (
+    <div className="mt-1.5 flex items-center justify-between gap-2">
+      <StatusBadge status={data.status} />
+      <span className="inline-flex shrink-0 items-center gap-1">
+        {data.agent ? (
+          <span
+            className="inline-flex items-center gap-1 rounded-full bg-[#5E6AD2]/10 px-1.5 py-px text-[10px] font-medium text-[#5E6AD2]"
+            title={`Agent ${data.agent} is working on this task`}
+          >
+            <Bot className="size-3 shrink-0 animate-pulse" strokeWidth={1.75} />
+          </span>
+        ) : null}
+        {showAssignee ? (
+          <AssigneeAvatar
+            assignee={assignee}
+            className="size-5 text-[10px]"
+          />
+        ) : null}
+      </span>
+    </div>
   );
 }
 
@@ -57,20 +88,7 @@ function NodeChrome({
       <p className="text-[13px] leading-snug font-medium text-foreground">
         {data.title}
       </p>
-      {data.kind !== "start" ? (
-        <div className="mt-1.5 flex items-center justify-between gap-2">
-          <StatusBadge status={data.status} />
-          {data.agent ? (
-            <span
-              className="inline-flex min-w-0 items-center gap-1 rounded-full bg-[#5E6AD2]/10 px-1.5 py-px text-[10px] font-medium text-[#5E6AD2]"
-              title={`Agent ${data.agent} is working on this task`}
-            >
-              <Bot className="size-3 shrink-0 animate-pulse" strokeWidth={1.75} />
-              <span className="truncate">{data.agent}</span>
-            </span>
-          ) : null}
-        </div>
-      ) : null}
+      <NodeMeta data={data} />
       <Handle
         type="source"
         position={Position.Bottom}
@@ -105,7 +123,7 @@ export function TaskNode({ id, data, selected }: NodeProps) {
 export function DecisionNode({ id, data, selected }: NodeProps) {
   const nodeData = data as GraphNodeData;
   return (
-    <div className="relative flex h-[108px] w-[108px] cursor-pointer items-center justify-center">
+    <div className="relative flex h-[120px] w-[120px] cursor-pointer items-center justify-center">
       <NodePresence id={id} />
       <Handle
         type="target"
@@ -114,16 +132,26 @@ export function DecisionNode({ id, data, selected }: NodeProps) {
       />
       <div
         className={cn(
-          "flex size-[76px] rotate-45 items-center justify-center border bg-background shadow-[0_1px_2px_rgba(0,0,0,0.04)]",
+          "flex size-[84px] rotate-45 items-center justify-center border bg-background shadow-[0_1px_2px_rgba(0,0,0,0.04)]",
           selected
             ? "border-foreground/40"
             : "border-border hover:border-foreground/20",
         )}
       >
-        <div className="-rotate-45 px-1.5 text-center">
+        <div className="-rotate-45 flex flex-col items-center gap-1 px-1.5 text-center">
           <p className="text-[11px] leading-tight font-medium text-foreground">
             {nodeData.title}
           </p>
+          <span className="inline-flex items-center gap-1">
+            <StatusBadge status={nodeData.status} iconOnly />
+            {nodeData.assigneeId &&
+            nodeData.assigneeId !== "unassigned" ? (
+              <AssigneeAvatar
+                assignee={getAssignee(nodeData.assigneeId)}
+                className="size-4 text-[9px]"
+              />
+            ) : null}
+          </span>
         </div>
       </div>
       <Handle

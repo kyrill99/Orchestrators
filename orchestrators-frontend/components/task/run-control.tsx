@@ -9,14 +9,24 @@ import { cn } from "@/lib/utils";
 type Action = "start" | "stop" | "restart";
 
 /** Which agent works on this task, with start / stop / restart (live backend graph). */
-export function RunControl({ taskId }: { taskId: string }) {
+export function RunControl({
+  taskId,
+  onStatusChange,
+}: {
+  taskId: string;
+  /** Fired when a run action changes the task's graph status. */
+  onStatusChange?: (status: string) => void;
+}) {
   const [state, setState] = useState<TaskRunState | null>(null);
   const [pending, setPending] = useState<Action | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(() => {
-    fetchTaskRun(taskId).then(setState);
-  }, [taskId]);
+    fetchTaskRun(taskId).then((next) => {
+      setState(next);
+      if (next.kind === "live") onStatusChange?.(next.status);
+    });
+  }, [taskId, onStatusChange]);
 
   useEffect(() => {
     refresh();

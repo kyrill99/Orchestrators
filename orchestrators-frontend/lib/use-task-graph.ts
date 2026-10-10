@@ -31,5 +31,17 @@ export function useTaskGraph() {
     return () => window.clearInterval(id);
   }, [reload]);
 
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void reload();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onVisible);
+    };
+  }, [reload]);
+
   return { data, error, loading, reload };
 }

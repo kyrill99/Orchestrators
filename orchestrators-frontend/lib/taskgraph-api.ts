@@ -1,4 +1,4 @@
-import { apiBaseUrl } from "@/lib/api";
+import { apiBaseUrl, GUI_ACTOR } from "@/lib/api";
 import type { Task, TaskActivity, TaskEdge, TaskKind, TaskStatus } from "@/lib/fixtures";
 
 export type GraphProject = {
@@ -43,10 +43,17 @@ function todayIso() {
   return new Date().toISOString().slice(0, 10);
 }
 
+function addIsoDays(iso: string, days: number) {
+  const [y, m, d] = iso.split("-").map(Number);
+  const date = new Date(Date.UTC(y, m - 1, d + days));
+  return date.toISOString().slice(0, 10);
+}
+
 /** Map API task into the UI Task shape (dates default when agent omitted them). */
 export function mapApiTask(raw: ApiTask): Task {
   const start = raw.startDate || todayIso();
-  const end = raw.endDate || start;
+  // Missing end → a week-long bar so the timeline isn't a stack of one-day chips.
+  const end = raw.endDate || addIsoDays(start, 6);
   const activity: TaskActivity[] = (raw.activity || []).map((a) => ({
     id: a.id,
     text: a.text,
@@ -103,6 +110,33 @@ export async function fetchTask(id: string): Promise<Task | null> {
     throw new Error(await response.text() || "Could not load task");
   }
   return mapApiTask(await response.json());
+}
+
+/** Persist a status change so Project graph / timeline pick it up on the next poll. */
+export async function setTaskStatus(
+  taskId: string,
+  status: TaskStatus,
+  reason = "Updated status from the GUI",
+): Promise<void> {
+  const response = await fetch(`${apiBaseUrl()}/api/taskgraph/changes`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      actor: GUI_ACTOR,
+      reason,
+      ops: [{ op: "task.set_status", taskId, status }],
+    }),
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    const detail = body?.detail;
+    const message =
+      (typeof detail === "string" && detail) ||
+      detail?.message ||
+      body?.message ||
+      "Could not update status";
+    throw new Error(message);
+  }
 }
 
 /** Simple layered layout from blockedBy edges (top → bottom). */

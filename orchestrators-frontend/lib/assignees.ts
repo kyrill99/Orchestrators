@@ -85,9 +85,16 @@ export function loadAssignee(taskId: string): AssigneeId {
   return "unassigned";
 }
 
+export const ASSIGNEE_CHANGED_EVENT = "orchestrators:assignee-changed";
+
 export function saveAssignee(taskId: string, id: AssigneeId): void {
   try {
     window.localStorage.setItem(storageKey(taskId), id);
+    window.dispatchEvent(
+      new CustomEvent(ASSIGNEE_CHANGED_EVENT, {
+        detail: { taskId, assigneeId: id },
+      }),
+    );
   } catch {
     /* ignore */
   }
