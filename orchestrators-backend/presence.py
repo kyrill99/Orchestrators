@@ -4,7 +4,11 @@ In memory only (one uvicorn worker). Browsers POST a heartbeat every few
 seconds:
 
     POST /api/presence  {"where": "agent" | "task:<id>" | ..., "typing": bool,
-                         "conversation_id": str | null}
+                         "conversation_id": str | null,
+                         # optional, for multiplayer (see multiplayer.py):
+                         "selection": task id selected on a graph | null,
+                         "editing": field being edited (soft lock) | null,
+                         "route": page path, for follow mode | null}
 
 and get back every active entry (the caller included; the client filters
 itself out). GET /api/presence returns the same list. Entries not refreshed
@@ -19,8 +23,15 @@ import time
 from collections.abc import Callable
 from typing import Any
 
+from fastapi import APIRouter, Request
+from pydantic import BaseModel
+
+from identity import current_user
+
 CHANNEL = "presence"
 TTL = 15.0
+# Optional multiplayer fields stored as given (strings, clipped).
+EXTRA_FIELDS = ("selection", "editing", "route")
 
 
 class PresenceStore:
@@ -57,6 +68,7 @@ class PresenceStore:
         typing: bool = False,
         conversation_id: str | None = None,
         project: str = "default",
+        **extra: str | None,
     ) -> list[dict[str, Any]]:
         now = self._clock()
         with self._lock:
@@ -71,8 +83,12 @@ class PresenceStore:
                 "project": project,
                 "updated_at": now,
             }
+            for key in EXTRA_FIELDS:
+                value = extra.get(key)
+                entry[key] = str(value)[:500] if value else None
             changed = pruned or old is None or any(
-                old.get(k) != entry[k] for k in ("where", "typing", "conversation_id", "project")
+                old.get(k) != entry[k]
+                for k in ("where", "typing", "conversation_id", "project", *EXTRA_FIELDS)
             )
             self._entries[email] = entry
             snapshot = self._snapshot()
@@ -95,17 +111,20 @@ class PresenceStore:
             return self._snapshot()
 
 
+# Module level, not inside build_router: with `from __future__ import
+# annotations` FastAPI resolves `body: Heartbeat` in module globals, and a
+# local class made POST /api/presence answer 422 to every heartbeat.
+class Heartbeat(BaseModel):
+    where: str = ""
+    typing: bool = False
+    conversation_id: str | None = None
+    selection: str | None = None
+    editing: str | None = None
+    route: str | None = None
+
+
 def build_router(store: PresenceStore):
-    from fastapi import APIRouter, Request
-    from pydantic import BaseModel
-
-    from identity import current_user
     from projects import current_project
-
-    class Heartbeat(BaseModel):
-        where: str = ""
-        typing: bool = False
-        conversation_id: str | None = None
 
     r = APIRouter(prefix="/api", tags=["presence"])
 
@@ -119,8 +138,13 @@ def build_router(store: PresenceStore):
         if not body.where:
             return store.leave(user.email)
         return store.update(
-            user.email, user.name, body.where, body.typing, body.conversation_id,
+            user.email,
+            user.name,
+            body.where,
+            body.typing,
+            body.conversation_id,
             project=current_project.get(),
+            **{k: getattr(body, k) for k in EXTRA_FIELDS},
         )
 
     return r

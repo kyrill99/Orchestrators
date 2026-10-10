@@ -6,7 +6,7 @@ import { getAssignee, type AssigneeId } from "@/lib/assignees";
 import { StatusBadge } from "@/components/task/status-badge";
 import { AssigneeAvatar } from "@/components/task/assignee-picker";
 import { AvatarStack } from "@/components/presence/presence";
-import { usePresenceAt } from "@/lib/presence";
+import { presenceColor, presenceName, useTaskPresence } from "@/lib/presence";
 import type { TaskKind, TaskStatus } from "@/lib/fixtures";
 import { cn } from "@/lib/utils";
 
@@ -20,14 +20,41 @@ export type GraphNodeData = {
   agent?: string;
 };
 
-/** Teammates who have this task open, as small avatars on the node corner. */
+/**
+ * Teammates who have this task open, as small avatars on the node corner.
+ * Someone who selected the node on their graph, or is editing the task, also
+ * gets an outline in their color with a name tag (multiplayer).
+ */
 function NodePresence({ id }: { id: string }) {
-  const people = usePresenceAt(`task:${id}`);
+  const people = useTaskPresence().get(id) ?? [];
   if (people.length === 0) return null;
+  const open = people.filter((p) => p.open);
+  const lead =
+    people.find((p) => p.open && p.editing) ?? people.find((p) => p.selected);
+  const color = lead ? presenceColor(lead.email) : undefined;
   return (
-    <span className="pointer-events-none absolute -top-2.5 -right-2 z-10">
-      <AvatarStack people={people} size={18} max={3} />
-    </span>
+    <>
+      {lead ? (
+        <>
+          <span
+            className="pointer-events-none absolute -inset-[3px] z-10 rounded-[inherit] border-2"
+            style={{ borderColor: color }}
+          />
+          <span
+            className="pointer-events-none absolute -top-4 left-0 z-10 rounded-sm px-1 text-[9px] leading-[14px] font-medium whitespace-nowrap text-white"
+            style={{ backgroundColor: color }}
+          >
+            {presenceName(lead)}
+            {lead.open && lead.editing ? ` · editing ${lead.editing}` : ""}
+          </span>
+        </>
+      ) : null}
+      {open.length > 0 ? (
+        <span className="pointer-events-none absolute -top-2.5 -right-2 z-10">
+          <AvatarStack people={open} size={18} max={3} />
+        </span>
+      ) : null}
+    </>
   );
 }
 

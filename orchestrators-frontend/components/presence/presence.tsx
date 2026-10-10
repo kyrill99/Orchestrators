@@ -15,36 +15,72 @@ export function AvatarStack({
   size = 20,
   max = 4,
   className,
+  onSelect,
+  describe,
 }: {
   people: PresenceEntry[];
   size?: number;
   max?: number;
   className?: string;
+  /** Makes each avatar a button (e.g. click to follow). */
+  onSelect?: (person: PresenceEntry) => void;
+  /** Tooltip text; defaults to "<name> is here / is typing… / is editing …". */
+  describe?: (person: PresenceEntry) => string;
 }) {
   if (people.length === 0) return null;
   const shown = people.slice(0, max);
   const extra = people.length - shown.length;
   return (
     <span className={cn("inline-flex items-center", className)}>
-      {shown.map((person, index) => (
-        <span
-          key={person.email}
-          title={`${presenceName(person)}${person.typing ? " is typing…" : " is here"}`}
-          className={cn(
-            "relative inline-flex shrink-0 items-center justify-center rounded-full font-semibold text-white ring-2 ring-background",
-            person.typing && "animate-pulse",
-          )}
-          style={{
-            width: size,
-            height: size,
-            fontSize: Math.max(8, Math.round(size * 0.48)),
-            backgroundColor: presenceColor(person.email),
-            marginLeft: index === 0 ? 0 : -Math.round(size / 4),
-          }}
-        >
-          {presenceInitial(person)}
-        </span>
-      ))}
+      {shown.map((person, index) => {
+        const title = describe
+          ? describe(person)
+          : `${presenceName(person)}${
+              person.editing
+                ? ` is editing ${person.editing}`
+                : person.typing
+                  ? " is typing…"
+                  : " is here"
+            }`;
+        const color = presenceColor(person.email);
+        const avatar = (
+          <span
+            title={onSelect ? undefined : title}
+            className={cn(
+              "relative inline-flex shrink-0 items-center justify-center rounded-full font-semibold text-white ring-2 ring-background",
+              person.typing && "motion-safe:animate-pulse",
+            )}
+            style={{
+              width: size,
+              height: size,
+              fontSize: Math.max(8, Math.round(size * 0.48)),
+              backgroundColor: color,
+              // Editing (a soft lock): an outer ring in their color.
+              boxShadow: person.editing ? `0 0 0 3.5px ${color}` : undefined,
+            }}
+          >
+            {presenceInitial(person)}
+          </span>
+        );
+        const style = { marginLeft: index === 0 ? 0 : -Math.round(size / 4) };
+        return onSelect ? (
+          <button
+            key={person.email}
+            type="button"
+            title={title}
+            aria-label={title}
+            onClick={() => onSelect(person)}
+            className="relative rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            style={style}
+          >
+            {avatar}
+          </button>
+        ) : (
+          <span key={person.email} className="relative inline-flex" style={style}>
+            {avatar}
+          </span>
+        );
+      })}
       {extra > 0 ? (
         <span
           className="ml-1 text-[10px] font-medium text-muted-foreground"

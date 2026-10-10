@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { EngineToggle } from "@/components/layout/engine-toggle";
 import { fetchTask, fetchTaskGraph } from "@/lib/taskgraph-api";
 import { ProjectSwitcher } from "@/components/layout/project-switcher";
+import { OnlineAvatars } from "@/components/multiplayer/online-avatars";
 
 export function TopBar() {
   const pathname = usePathname();
@@ -80,7 +81,8 @@ export function TopBar() {
           </>
         ) : null}
       </div>
-      <div className="ml-auto shrink-0 pl-3">
+      <div className="ml-auto flex shrink-0 items-center gap-3 pl-3">
+        <OnlineAvatars />
         <EngineToggle />
       </div>
     </header>

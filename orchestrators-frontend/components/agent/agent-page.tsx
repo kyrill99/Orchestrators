@@ -27,6 +27,8 @@ import {
   usePresenceSnapshot,
 } from "@/lib/presence";
 import { AvatarStack, TypingLine } from "@/components/presence/presence";
+import { ContainerCursors } from "@/components/multiplayer/cursors";
+import { OnlineAvatars } from "@/components/multiplayer/online-avatars";
 import {
   VOICE_OPENERS,
   VoiceConversation,
@@ -186,8 +188,9 @@ export function AgentPage() {
           New chat
           <ChevronDown className="size-3.5 text-muted-foreground" strokeWidth={1.75} />
         </button>
-        <span className="ml-auto mr-1">
+        <span className="ml-auto mr-1 inline-flex items-center gap-3">
           <AvatarStack people={agentPeople} size={20} />
+          <OnlineAvatars />
         </span>
         <span
           className="inline-flex items-center gap-1.5 px-2 text-xs text-muted-foreground"
@@ -344,6 +347,7 @@ function ConversationList({
   onSelect: (id: string) => void;
   compact?: boolean;
 }) {
+  const { others } = usePresenceSnapshot();
   if (conversations.length === 0) {
     return (
       <p className={cn("text-[13px] text-muted-foreground", compact && "px-2")}>
@@ -379,6 +383,13 @@ function ConversationList({
               <span className="min-w-0 flex-1 truncate text-foreground">
                 {c.title || (c.mode === "voice" ? "Voice conversation" : "New conversation")}
               </span>
+              <AvatarStack
+                people={others.filter(
+                  (p) => p.where === "agent" && p.conversation_id === c.id,
+                )}
+                size={16}
+                max={3}
+              />
               <span className="shrink-0 text-xs text-muted-foreground">
                 {now > 0 ? age(c.updated_at, now) : ""}
               </span>
@@ -525,6 +536,12 @@ function Interview({
   onNewChat: () => void;
 }) {
   const bottomRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  // Who else has this conversation open (their cursors show over the chat).
+  const { others } = usePresenceSnapshot();
+  const watching = detail
+    ? others.filter((p) => p.where === "agent" && p.conversation_id === detail.id)
+    : [];
   const messages = detail?.messages ?? [];
   const thinking = Boolean(detail?.thinking) || sending;
 
@@ -545,16 +562,22 @@ function Interview({
             </p>
           )}
         </div>
-        <button
-          type="button"
-          onClick={onNewChat}
-          className="shrink-0 text-xs text-muted-foreground transition-colors hover:text-foreground"
-        >
-          New chat
-        </button>
+        <span className="flex shrink-0 items-center gap-3">
+          <AvatarStack people={watching} size={20} />
+          <button
+            type="button"
+            onClick={onNewChat}
+            className="text-xs text-muted-foreground transition-colors hover:text-foreground"
+          >
+            New chat
+          </button>
+        </span>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-auto">
+      {detail ? (
+        <ContainerCursors location={`conversation:${detail.id}`} container={scrollRef} />
+      ) : null}
+      <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto">
         <div className="mx-auto flex max-w-2xl flex-col gap-3 px-6 py-4">
           {!detail && (
             <div className="inline-flex items-center gap-2 self-center py-6 text-[13px] text-muted-foreground">

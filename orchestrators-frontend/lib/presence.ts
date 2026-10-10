@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useSyncExternalStore } from "react";
 import { apiBaseUrl, fetchMe } from "@/lib/api";
 import { DEFAULT_PROJECT_ID, getCurrentProjectId } from "@/lib/projects";
 
@@ -11,6 +11,11 @@ import { DEFAULT_PROJECT_ID, getCurrentProjectId } from "@/lib/projects";
  * it POSTs a heartbeat ({where, typing, conversation_id}) every POLL_MS and
  * gets everyone's entries back. Typing is sent immediately and cleared after
  * TYPING_IDLE_MS without keystrokes.
+ *
+ * Multiplayer extras (see components/multiplayer): the selected graph node,
+ * the field being edited (a soft lock) and the route, for follow mode. With
+ * the multiplayer WebSocket up, changes from others also arrive instantly
+ * through applyPresence(); the poll stays as heartbeat and fallback.
  */
 
 export type PresenceEntry = {
@@ -22,10 +27,23 @@ export type PresenceEntry = {
   conversation_id: string | null;
   updated_at: number;
   /** Project id the teammate has open (missing = "default"). */
-  project?: string;
+  project?: string | null;
+  /** Task id selected on a graph. */
+  selection?: string | null;
+  /** Field being edited at `where` (soft lock), e.g. "description". */
+  editing?: string | null;
+  /** Page path, for follow mode. */
+  route?: string | null;
 };
 
-type Mine = { where: string; typing: boolean; conversationId: string | null };
+type Mine = {
+  where: string;
+  typing: boolean;
+  conversationId: string | null;
+  selection?: string | null;
+  editing?: string | null;
+  route?: string | null;
+};
 
 type Snapshot = {
   /** Other people's entries (never this browser's user). */
@@ -68,6 +86,9 @@ async function send(): Promise<void> {
         where: mine.where,
         typing: mine.typing,
         conversation_id: mine.conversationId,
+        selection: mine.selection ?? null,
+        editing: mine.editing ?? null,
+        route: mine.route ?? null,
       }),
     });
     if (!response.ok) return;
@@ -126,7 +147,10 @@ function setMine(next: Mine) {
   const changed =
     next.where !== mine.where ||
     next.typing !== mine.typing ||
-    next.conversationId !== mine.conversationId;
+    next.conversationId !== mine.conversationId ||
+    (next.selection ?? null) !== (mine.selection ?? null) ||
+    (next.editing ?? null) !== (mine.editing ?? null) ||
+    (next.route ?? null) !== (mine.route ?? null);
   mine = next;
   if (changed) {
     rebuild();
@@ -162,10 +186,10 @@ export function useAnnouncePresence(
 ): PresenceEntry[] {
   const snap = usePresenceSnapshot();
   useEffect(() => {
-    setMine({ where, typing: false, conversationId });
+    setMine({ ...mine, where, typing: false, conversationId, editing: null });
     return () => {
       if (mine.where === where) {
-        setMine({ where: "", typing: false, conversationId: null });
+        setMine({ ...mine, where: "", typing: false, conversationId: null, editing: null });
       }
     };
   }, [where, conversationId]);
@@ -224,4 +248,88 @@ export function typingText(people: PresenceEntry[]): string {
   if (names.length === 1) return `${names[0]} is typing…`;
   if (names.length === 2) return `${names[0]} and ${names[1]} are typing…`;
   return `${names.length} people are typing…`;
+}
+
+// ---- multiplayer extras ----
+
+/** Everyone's entries, pushed by the multiplayer WebSocket (instant updates). */
+export function applyPresence(next: PresenceEntry[]) {
+  if (!Array.isArray(next)) return;
+  entries = next;
+  rebuild();
+}
+
+/** The graph node this tab has selected (others see an outline in your color). */
+export function setSelection(selection: string | null) {
+  setMine({ ...mine, selection });
+}
+
+/** Page path, so others can follow you. */
+export function setRoute(route: string) {
+  setMine({ ...mine, route });
+}
+
+/** The followed person's entry, or null. */
+export function usePresenceOf(email: string | null): PresenceEntry | null {
+  const snap = usePresenceSnapshot();
+  return email ? (snap.others.find((e) => e.email === email) ?? null) : null;
+}
+
+/**
+ * Soft lock for an editable field at `where` (announce `where` too, e.g. with
+ * useAnnouncePresence). While `active` (your editor is open), others see
+ * "<you> is editing <field>". Returns someone else editing it now, to show a
+ * notice; when they stop (they saved), re-fetch to show their changes.
+ */
+export function useEditLock(
+  where: string,
+  field: string,
+  active: boolean,
+): PresenceEntry | null {
+  const people = usePresenceAt(where);
+  useEffect(() => {
+    if (!active) return;
+    setMine({ ...mine, editing: field });
+    return () => {
+      if (mine.editing === field) setMine({ ...mine, editing: null });
+    };
+  }, [active, field]);
+  return people.find((p) => p.editing === field) ?? null;
+}
+
+export type TaskPresence = PresenceEntry & {
+  /** Has the task page open. */
+  open: boolean;
+  /** Selected it on a graph. */
+  selected: boolean;
+};
+
+/** taskId -> others with the task open or selected (graph nodes, rows). */
+export function useTaskPresence(): Map<string, TaskPresence[]> {
+  const { others } = usePresenceSnapshot();
+  return useMemo(() => {
+    const map = new Map<string, TaskPresence[]>();
+    const add = (id: string, e: PresenceEntry, open: boolean, selected: boolean) => {
+      const list = map.get(id) ?? [];
+      const existing = list.find((x) => x.email === e.email);
+      if (existing) {
+        existing.open ||= open;
+        existing.selected ||= selected;
+      } else {
+        list.push({ ...e, open, selected });
+      }
+      map.set(id, list);
+    };
+    for (const e of others) {
+      if (e.where.startsWith("task:")) add(e.where.slice(5), e, true, false);
+      if (e.selection) add(e.selection, e, false, true);
+    }
+    return map;
+  }, [others]);
+}
+
+/** "Lorenz is editing description" for a task's open editors, or "". */
+export function editingText(people: PresenceEntry[]): string {
+  const p = people.find((x) => x.editing);
+  return p ? `${presenceName(p)} is editing ${p.editing}` : "";
 }

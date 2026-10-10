@@ -131,6 +131,8 @@ reverse_proxy = true
 ${EMAIL_LINES}
 upstreams = ["http://127.0.0.1:3000/", "http://127.0.0.1:8000/api/"]
 pass_user_headers = true
+# WebSocket upgrades on /api/multiplayer/ws (the default since v7; explicit here).
+proxy_websockets = true
 set_xauthrequest = true
 skip_provider_button = true
 EOF

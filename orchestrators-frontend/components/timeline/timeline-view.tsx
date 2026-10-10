@@ -8,6 +8,8 @@ import { useTaskGraph } from "@/lib/use-task-graph";
 import { cn } from "@/lib/utils";
 import { AssigneeAvatar } from "@/components/task/assignee-picker";
 import { StatusIcon } from "@/components/task/status-icon";
+import { AvatarStack } from "@/components/presence/presence";
+import { presenceColor, useTaskPresence } from "@/lib/presence";
 
 const DAY_MS = 86_400_000;
 const MIN_DAY_WIDTH = 36;
@@ -145,6 +147,8 @@ export function TimelineView() {
   const todayRef = useRef<HTMLDivElement>(null);
   const [viewportWidth, setViewportWidth] = useState(0);
   const { data, loading, error } = useTaskGraph();
+  // Teammates with a task open (avatars) or editing it (ring in their color).
+  const taskPresence = useTaskPresence();
   const todayIso = useMemo(() => new Date().toISOString().slice(0, 10), []);
 
   const ordered = useMemo(
@@ -316,6 +320,8 @@ export function TimelineView() {
                 const openEnded =
                   task.status === "open" || task.status === "running";
                 const assignee = getAssignee(loadAssignee(task.id));
+                const here = (taskPresence.get(task.id) ?? []).filter((p) => p.open);
+                const editor = here.find((p) => p.editing);
 
                 return (
                   <li
@@ -334,6 +340,9 @@ export function TimelineView() {
                         left,
                         width,
                         zIndex: 1,
+                        boxShadow: editor
+                          ? `0 0 0 2px ${presenceColor(editor.email)}`
+                          : undefined,
                       }}
                       title={`${task.title} · ${task.startDate} → ${task.endDate}`}
                     >
@@ -354,6 +363,12 @@ export function TimelineView() {
                       <span className="relative z-[1] min-w-0 flex-1 whitespace-nowrap text-[13px] font-medium text-foreground">
                         {task.title}
                       </span>
+                      <AvatarStack
+                        people={here}
+                        size={16}
+                        max={3}
+                        className="relative z-[1] shrink-0"
+                      />
                       <AssigneeAvatar
                         assignee={assignee}
                         className="relative z-[1] ml-auto size-5 shrink-0 text-[10px]"

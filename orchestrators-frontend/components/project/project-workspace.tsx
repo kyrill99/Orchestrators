@@ -5,6 +5,7 @@ import { useState } from "react";
 import { TimelineView } from "@/components/timeline/timeline-view";
 import { ProjectBrief } from "@/components/project/project-brief";
 import { cn } from "@/lib/utils";
+import { useAnnouncePresence } from "@/lib/presence";
 
 const TaskGraph = dynamic(
   () =>
@@ -19,6 +20,8 @@ type ViewMode = "graph" | "timeline";
 
 export function ProjectWorkspace() {
   const [mode, setMode] = useState<ViewMode>("graph");
+  // Others see you on the graph or timeline (avatars, follow mode).
+  useAnnouncePresence(mode);
 
   return (
     <div className="flex h-full flex-col">

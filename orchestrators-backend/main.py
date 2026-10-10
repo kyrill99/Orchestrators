@@ -32,6 +32,7 @@ from memory.distill import GeminiDistiller
 from presence import CHANNEL as PRESENCE_CHANNEL
 from presence import PresenceStore
 from presence import build_router as build_presence_router
+from multiplayer import build_router as build_multiplayer_router
 from selfupdate import build_router as build_selfupdate_router
 from storage import open_memory_store, open_taskgraph_store
 from sysstats import build_router as build_sysstats_router
@@ -71,6 +72,9 @@ db = Database()
 # In-process pub/sub for live updates (SSE); see events.py. One uvicorn worker.
 broker = Broker()
 app.include_router(build_events_router(broker, ["graph", "runs", CONVERSATIONS_CHANNEL, PRESENCE_CHANNEL]))
+# Live cursors, follow-mode viewports and broker events over one WebSocket
+# per tab (WS /api/multiplayer/ws); presence itself is presence.py.
+app.include_router(build_multiplayer_router(broker))
 
 # Every task graph event appended by this process is also published live on
 # the "graph" channel (GET /api/events?channel=graph).

@@ -36,6 +36,32 @@ class PresenceStoreTest(unittest.TestCase):
         self.store.update("a@x.com", "a", "agent", typing=True)
         self.assertEqual(len(self.changes), 2)
 
+    def test_multiplayer_fields(self):
+        self.store.update("a@x.com", "a", "task:t1", selection="t2", editing="description", route="/tasks/t1")
+        entry = self.store.active()[0]
+        self.assertEqual((entry["selection"], entry["editing"], entry["route"]), ("t2", "description", "/tasks/t1"))
+        self.assertEqual(entry["project"], "default")
+        self.store.update("a@x.com", "a", "task:t1", selection="t2", route="/tasks/t1")  # editing ends
+        self.assertEqual(len(self.changes), 2)
+
+    def test_heartbeat_endpoint(self):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        from presence import build_router
+
+        app = FastAPI()
+        app.include_router(build_router(self.store))
+        client = TestClient(app)
+        r = client.post(
+            "/api/presence",
+            json={"where": "graph", "typing": True, "route": "/project"},
+            headers={"X-Forwarded-Email": "a@x.com"},
+        )
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()[0]["route"], "/project")
+        self.assertEqual(client.get("/api/presence").json()[0]["email"], "a@x.com")
+
     def test_leave(self):
         self.store.update("a@x.com", "a", "agent")
         self.store.leave("a@x.com")

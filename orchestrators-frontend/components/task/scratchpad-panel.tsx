@@ -6,6 +6,7 @@ import { fetchScratchpad, saveScratchpad, type Scratchpad } from "@/lib/api";
 import { subscribeRunEvents } from "@/lib/run-events";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { presenceColor, presenceName, useEditLock } from "@/lib/presence";
 
 const POLL_MS = 3000;
 
@@ -16,6 +17,8 @@ export function ScratchpadPanel({ taskId }: { taskId: string }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const editing = draft !== null;
+  // Soft lock: others see you editing; you see them (it reloads when they save).
+  const editor = useEditLock(`task:${taskId}`, "scratchpad", editing);
 
   useEffect(() => {
     if (editing) return; // don't overwrite what the human is typing
@@ -60,6 +63,14 @@ export function ScratchpadPanel({ taskId }: { taskId: string }) {
         {pad.updatedAt ? (
           <span className="text-[11px] text-muted-foreground">
             {pad.updatedBy} · {new Date(pad.updatedAt).toLocaleString()}
+          </span>
+        ) : null}
+        {editor ? (
+          <span
+            className="text-[11px] font-medium"
+            style={{ color: presenceColor(editor.email) }}
+          >
+            {presenceName(editor)} is editing{editing ? " too; the last save wins" : ""}
           </span>
         ) : null}
         <div className="ml-auto flex gap-2">

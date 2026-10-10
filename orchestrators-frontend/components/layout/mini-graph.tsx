@@ -1,15 +1,21 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { apiBaseUrl, type AgentRun } from "@/lib/api";
 import type { Task, TaskEdge, TaskStatus } from "@/lib/fixtures";
 import { layoutGraph, mapApiTask, type ApiTask } from "@/lib/taskgraph-api";
 import { cn } from "@/lib/utils";
-import { presenceColor, presenceName, usePresenceSnapshot } from "@/lib/presence";
+import {
+  presenceColor,
+  presenceName,
+  usePresenceSnapshot,
+  useTaskPresence,
+} from "@/lib/presence";
+import { useChannel } from "@/components/multiplayer/provider";
 
-const POLL_MS = 3000;
+const POLL_MS = 30_000; // fallback; live updates come from the "graph" channel
 const WIDTH = 194;
 const HEIGHT = 92;
 const PAD = 8;
@@ -62,13 +68,26 @@ function toState(graph: BackendGraph | null, previous: MiniGraphState | null) {
   } satisfies MiniGraphState;
 }
 
-/** Polls GET /api/taskgraph/graph every few seconds while the tab is visible. */
+/**
+ * GET /api/taskgraph/graph, re-fetched on every live "graph" event (task and
+ * run changes) over the shared multiplayer connection; a slow poll while the
+ * tab is visible is the fallback.
+ */
 function useLiveGraph() {
   const [state, setState] = useState<MiniGraphState | null>(null);
+  const refreshSoon = useRef<() => void>(() => {});
+
+  useChannel("graph", () => refreshSoon.current());
 
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let soon: ReturnType<typeof setTimeout> | undefined;
     let cancelled = false;
+    // Debounced: one change can append several events.
+    refreshSoon.current = () => {
+      clearTimeout(soon);
+      soon = setTimeout(() => void refresh(), 150);
+    };
 
     const refresh = async () => {
       clearTimeout(timer);
@@ -95,6 +114,8 @@ function useLiveGraph() {
     document.addEventListener("visibilitychange", onVisibility);
     return () => {
       cancelled = true;
+      refreshSoon.current = () => {};
+      clearTimeout(soon);
       clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisibility);
     };
@@ -122,6 +143,8 @@ export function MiniGraph() {
   const [hovered, setHovered] = useState<string | null>(null);
   // Teammates with a task open get a coloured dot on that node.
   const presence = usePresenceSnapshot();
+  // ...and a ring in the color of whoever selected it on their graph.
+  const taskPresence = useTaskPresence();
 
   const structure = graph?.structure;
   const layout = useMemo(() => {
@@ -259,6 +282,9 @@ export function MiniGraph() {
           if (!p || !task) return null;
           const running = graph.running.has(id);
           const style = statusStyle(task.status);
+          const selector = taskPresence
+            .get(id)
+            ?.find((x) => x.selected || (x.open && x.editing));
           return (
             <g
               key={id}
@@ -270,6 +296,20 @@ export function MiniGraph() {
                 router.push(`/tasks/${encodeURIComponent(id)}`);
               }}
             >
+              {selector ? (
+                <circle
+                  cx={p.x}
+                  cy={p.y}
+                  r={r + 2.25}
+                  fill="none"
+                  stroke={presenceColor(selector.email)}
+                  strokeWidth={1.25}
+                >
+                  <title>{`${presenceName(selector)} ${
+                    selector.selected ? "selected this" : `is editing ${selector.editing}`
+                  }`}</title>
+                </circle>
+              ) : null}
               {running ? (
                 <circle
                   cx={p.x}

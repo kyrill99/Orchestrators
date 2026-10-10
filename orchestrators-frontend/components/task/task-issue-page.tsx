@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { ArrowLeft, Ban, Bot, User, Activity } from "lucide-react";
 import type { Task, TaskActivity, TaskStatus } from "@/lib/fixtures";
@@ -20,6 +20,8 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { HereLine, TypingLine } from "@/components/presence/presence";
 import { notifyTyping, useAnnouncePresence } from "@/lib/presence";
+import { ContainerCursors } from "@/components/multiplayer/cursors";
+import { useChannel } from "@/components/multiplayer/provider";
 
 type FeedItem = { kind: "activity"; at: string; activity: TaskActivity };
 
@@ -37,6 +39,13 @@ export function TaskIssuePage({ id }: { id: string }) {
   const [comment, setComment] = useState("");
   // Teammates with this task open (and whether they are typing here).
   const here = useAnnouncePresence(`task:${id}`);
+  // Live cursors over the page, and a re-fetch whenever this task changes.
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [version, setVersion] = useState(0);
+  useChannel("graph", (type, data) => {
+    const ids = (data as { taskIds?: string[] } | null)?.taskIds;
+    if (type === "resync" || ids?.includes(id)) setVersion((v) => v + 1);
+  });
 
   useEffect(() => {
     setAssignee(loadAssignee(id));
@@ -84,7 +93,7 @@ export function TaskIssuePage({ id }: { id: string }) {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [id]);
+  }, [id, version]);
 
   function onAssigneeChange(next: AssigneeId) {
     setAssignee(next);
@@ -116,7 +125,7 @@ export function TaskIssuePage({ id }: { id: string }) {
     }
   }
 
-  if (loading) {
+  if (loading && !task) {
     return (
       <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
         Loading issue…
@@ -160,7 +169,9 @@ export function TaskIssuePage({ id }: { id: string }) {
 
   return (
     <div className="flex h-full overflow-hidden">
+      <ContainerCursors location={`task:${id}`} container={scrollRef} />
       <div
+        ref={scrollRef}
         className="min-w-0 flex-1 overflow-auto"
         onKeyDown={(event) => {
           const target = event.target as HTMLElement;

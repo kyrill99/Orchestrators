@@ -8,6 +8,7 @@ import { TopBar } from "@/components/layout/top-bar";
 import { AgentFab } from "@/components/layout/agent-fab";
 import { BugReportButton } from "@/components/layout/bug-report-button";
 import { AgentDrawer } from "@/components/agent/agent-drawer";
+import { MultiplayerProvider } from "@/components/multiplayer/provider";
 import "./globals.css";
 
 const inter = Inter({
@@ -33,6 +34,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
     >
       <body className="min-h-full font-sans">
         <TooltipProvider>
+          <MultiplayerProvider>
           <AgentDrawerProvider>
             <div className="flex h-svh overflow-hidden bg-shell text-foreground">
               <Suspense
@@ -63,6 +65,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
               <AgentDrawer />
             </div>
           </AgentDrawerProvider>
+          </MultiplayerProvider>
         </TooltipProvider>
       </body>
     </html>

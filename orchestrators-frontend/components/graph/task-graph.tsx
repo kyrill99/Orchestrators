@@ -18,6 +18,8 @@ import { ASSIGNEE_CHANGED_EVENT, loadAssignee } from "@/lib/assignees";
 import { fetchActiveRuns } from "@/lib/api";
 import { layoutGraph } from "@/lib/taskgraph-api";
 import { useTaskGraph } from "@/lib/use-task-graph";
+import { setSelection } from "@/lib/presence";
+import { FlowMultiplayer } from "@/components/multiplayer/cursors";
 
 export function TaskGraph() {
   const router = useRouter();
@@ -114,6 +116,12 @@ export function TaskGraph() {
     return () => clearInterval(id);
   }, [setNodes]);
 
+  // Others see what you select as an outline in your color (multiplayer).
+  const onSelectionChange = useCallback(({ nodes: selected }: { nodes: Node[] }) => {
+    setSelection(selected[0]?.id ?? null);
+  }, []);
+  useEffect(() => () => setSelection(null), []);
+
   const onNodeClick: NodeMouseHandler = useCallback(
     (_event, node) => {
       router.push(`/tasks/${node.id}`);
@@ -157,6 +165,7 @@ export function TaskGraph() {
         edges={edges}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
+        onSelectionChange={onSelectionChange}
         nodeTypes={nodeTypes}
         onNodeClick={onNodeClick}
         fitView
@@ -168,6 +177,7 @@ export function TaskGraph() {
         className="cursor-grab"
       >
         <Background gap={20} size={1} color="#ececef" />
+        <FlowMultiplayer location="graph" />
         <Controls
           showInteractive={false}
           position="bottom-left"

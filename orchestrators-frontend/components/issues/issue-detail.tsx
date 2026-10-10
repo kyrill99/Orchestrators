@@ -25,6 +25,13 @@ import {
   uploadIssueAttachment,
   type Issue,
 } from "@/lib/issues";
+import { HereLine } from "@/components/presence/presence";
+import {
+  presenceColor,
+  presenceName,
+  useAnnouncePresence,
+  useEditLock,
+} from "@/lib/presence";
 
 export function IssueDetail({
   id,
@@ -156,6 +163,7 @@ function PublishedIssue({
 
   return (
     <article className="mx-auto max-w-2xl px-6 py-8 sm:px-10">
+      <IssuePresence issue={issue} editing={editing} onChange={onChange} />
       <p className="mb-2 flex flex-wrap items-center gap-x-1.5 text-xs text-muted-foreground">
         <span className="font-mono">#{issue.number}</span>
         <span>·</span>
@@ -372,5 +380,49 @@ function PublishedIssue({
         </div>
       </form>
     </article>
+  );
+}
+
+/**
+ * Who else has this issue open, and a soft lock on editing it: while your
+ * editor is open others see "<you> is editing"; when someone else saves (stops
+ * editing), the issue is re-fetched so their changes show up.
+ */
+function IssuePresence({
+  issue,
+  editing,
+  onChange,
+}: {
+  issue: Issue;
+  editing: boolean;
+  onChange: (issue: Issue) => void;
+}) {
+  const where = `issues:${issue.id}`;
+  const here = useAnnouncePresence(where);
+  const editor = useEditLock(where, "description", editing);
+  const editorEmail = editor?.email ?? null;
+  const previous = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (previous.current && !editorEmail) {
+      getIssue(issue.id).then(onChange, () => {});
+    }
+    previous.current = editorEmail;
+  }, [editorEmail, issue.id, onChange]);
+
+  if (here.length === 0) return null;
+  return (
+    <div className="mb-3 flex flex-wrap items-center gap-3">
+      <HereLine people={here} />
+      {editor ? (
+        <span
+          className="text-[12px] font-medium"
+          style={{ color: presenceColor(editor.email) }}
+        >
+          {presenceName(editor)} is editing this issue
+          {editing ? " too; the last save wins" : ""}
+        </span>
+      ) : null}
+    </div>
   );
 }
