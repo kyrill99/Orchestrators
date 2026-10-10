@@ -184,6 +184,8 @@ def _file_bug_task(issue: dict) -> None:
     number = issue.get("number")
     title = (issue.get("title") or "Bug report").strip()
     author = (issue.get("author") or {}).get("email") or "reporter"
+    if str(author).startswith("agent:"):
+        return  # filed by a task agent about its own project's work, not an app bug report
     task_id = f"bug-{number}" if number else None
     service = project_graphs.service(ORCHESTRATORS_PROJECT)
     if task_id and task_id in service.state.tasks:
