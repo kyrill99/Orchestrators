@@ -9,6 +9,7 @@ import {
   MousePointer2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { MiniGraph } from "@/components/layout/mini-graph";
 import { SystemStats } from "@/components/layout/system-stats";
 import { UpdateControl } from "@/components/layout/update-control";
 
@@ -63,6 +64,7 @@ export function SideNav() {
       </nav>
 
       <div className="mt-auto flex flex-col gap-3">
+        <MiniGraph />
         <SystemStats />
         <UpdateControl />
       </div>
