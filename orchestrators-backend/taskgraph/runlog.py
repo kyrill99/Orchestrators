@@ -3,7 +3,8 @@
     run_steps(run_id, seq, task_id, at, kind, payload_json)
         Everything an in-process worker does, recorded as it happens:
         thinking / message (model text), tool_call (name + args),
-        tool_result (truncated), error, status. `seq` counts per run from 1, so
+        tool_result (truncated), error, status, landing (commits pushed to the
+        project repository, or why not; workspaces.py). `seq` counts per run from 1, so
         the GUI polls GET /runs/{id}/steps?after=<last seq>.
 
     scratchpads(task_id, content, updated_at, updated_by)
@@ -25,8 +26,8 @@ from typing import Any, Literal
 
 from db import Database
 
-StepKind = Literal["thinking", "message", "tool_call", "tool_result", "error", "status"]
-STEP_KINDS = ("thinking", "message", "tool_call", "tool_result", "error", "status")
+StepKind = Literal["thinking", "message", "tool_call", "tool_result", "error", "status", "landing"]
+STEP_KINDS = ("thinking", "message", "tool_call", "tool_result", "error", "status", "landing")
 
 MAX_SCRATCHPAD_CHARS = 100_000
 

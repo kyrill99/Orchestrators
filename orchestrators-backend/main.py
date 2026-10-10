@@ -130,6 +130,9 @@ def _project_parts(pid: str, service: TaskGraphService, pdb: Database, db_path: 
         gemini.project_brief = lambda: projects.brief(pid)  # type: ignore[attr-defined]
         # Runs happen outside a request, so the worker's memory is told its project.
         gemini.project_id = pid  # type: ignore[attr-defined]
+        # A project with a repository: each run gets a git worktree and code tools,
+        # and lands its commits on main when it succeeds (workspaces.py).
+        gemini.workspace = lambda: projects.workspace(pid)
         return gemini
 
     runner = runner_from_env(_gemini)

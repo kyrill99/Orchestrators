@@ -18,7 +18,8 @@ the worker instead of a copy-pasted variant.
 
 Tool sets: `interview_tools` (memory + graph reads/writes, + issues), `planner_tools`
 (graph + run control + scratchpad + engine + artifact reads) and `worker_tools`
-(one task, + saving artifacts).
+(one task, + saving artifacts, + `code_tools` on the run's git worktree when the
+project has a repository; see workspaces.py).
 """
 
 from __future__ import annotations
@@ -64,6 +65,7 @@ if TYPE_CHECKING:
     from taskgraph.engine import Engine
     from taskgraph.runlog import RunLog, Scratchpads
     from taskgraph.runs import RunManager
+    from workspaces import RunWorkspace
 
 MemoryKind = Literal["strategy", "preference", "decision", "learning", "note"]
 Scope = Literal["project", "user", "global"]
@@ -232,6 +234,7 @@ class ToolContext:
     artifacts: ProjectArtifacts | None = None
     project_id: str | None = None  # None: the active project (MemoryService decides)
     user_id: str = DEFAULT_ID
+    workspace: RunWorkspace | None = None  # the run's git worktree (worker runs on a repo)
 
     def need(self, what: str) -> Any:
         value = getattr(self, what)
@@ -760,6 +763,155 @@ def artifact_tools(ctx: ToolContext) -> list[ToolDef]:
 
 
 # --------------------------------------------------------------------------
+# Code (the run's git worktree; workspaces.py). Worker set only.
+# --------------------------------------------------------------------------
+
+
+def _ws_call(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """WorkspaceError -> TaskGraphError, so dispatch reports it to the model."""
+    from workspaces import WorkspaceError
+
+    @functools.wraps(fn)
+    def wrapper(*a: Any, **kw: Any) -> Any:
+        try:
+            return fn(*a, **kw)
+        except WorkspaceError as e:
+            raise TaskGraphError(e.code, str(e)) from None
+    return wrapper
+
+
+def code_tools(ctx: ToolContext) -> list[ToolDef]:
+    def ws() -> RunWorkspace:
+        return ctx.need("workspace")
+
+    def list_files(glob: str = "**") -> dict:
+        """Files in the repository (tracked and new, not ignored) matching a glob,
+        e.g. '**/*.py', 'src/*', 'README*'."""
+        return ws().list_files(glob)
+
+    def read_file(path: str, start_line: int | None = None, end_line: int | None = None) -> dict:
+        """Read a text file (path relative to the repository root) with line
+        numbers, optionally only lines start_line..end_line. Long files are cut;
+        the result says where to continue."""
+        return ws().read_file(path, start_line, end_line)
+
+    def search_code(pattern: str, glob: str | None = None, ignore_case: bool = False) -> dict:
+        """Search file contents with an extended regular expression (git grep -E).
+        Returns 'path:line:text' matches; glob narrows the files (e.g. '*.py')."""
+        return ws().search_code(pattern, glob, ignore_case)
+
+    def write_file(path: str, content: str) -> dict:
+        """Create or overwrite a file with `content`. Prefer edit_file for changes
+        to existing files."""
+        return ws().write_file(path, content)
+
+    def edit_file(path: str, old: str, new: str) -> dict:
+        """Replace the exact text `old` with `new` in a file. `old` must occur
+        exactly once (whitespace included); add surrounding lines to make it unique."""
+        return ws().edit_file(path, old, new)
+
+    def delete_file(path: str) -> dict:
+        """Delete a file."""
+        return ws().delete_file(path)
+
+    def git_status() -> dict:
+        """Your branch, the main commit you started from, your commits so far and
+        uncommitted changes."""
+        return ws().status()
+
+    def git_diff(stat_only: bool = False, path: str | None = None) -> dict:
+        """What you changed since you started (commits and uncommitted edits):
+        a diff stat (files, +/- lines) and the diff (truncated). stat_only=true
+        for just the stat, e.g. for your report."""
+        return ws().diff(stat_only, path)
+
+    def run_check(name: str) -> dict:
+        """Run one of the project's named checks (e.g. tests) in your worktree and
+        get passed, exit code and the output (head and tail if long). Only the
+        configured checks exist; there is no other shell."""
+        return ws().run_check(name)
+
+    def commit(message: str) -> dict:
+        """Stage every change and commit it with `message` (first line: a short
+        summary in the imperative; then a blank line and details if useful)."""
+        return ws().commit(message)
+
+    return [tool(_ws_call(f)) for f in (list_files, read_file, search_code, write_file, edit_file,
+                                         delete_file, git_status, git_diff, run_check, commit)]
+
+
+def record_landing(ctx: ToolContext, run_id: str, task_id: str, landed: dict[str, Any]) -> None:
+    """Note pushed commits on the task (comment + compare link) and in the run's steps."""
+    commits = landed["commits"]
+    files = landed["files"]
+    lines = [f"Pushed {len(commits)} commit{'s' * (len(commits) != 1)} to {landed['branch']} "
+             f"({len(files)} file{'s' * (len(files) != 1)}, +{landed['added']} -{landed['removed']}):"]
+    lines += [f"- {c['short']} {c['subject']}" for c in commits[:20]]
+    if landed.get("compareUrl"):
+        lines.append(f"Compare: {landed['compareUrl']}")
+    ops: list[Op] = [AddComment(task_id=task_id, body="\n".join(lines))]
+    if landed.get("compareUrl"):
+        current = [Artifact.model_validate(a) for a in ctx.tg.task(task_id)["artifacts"]]
+        label = f"Commits {commits[0]['short']}" + (f"..{commits[-1]['short']}" if len(commits) > 1 else "")
+        ops.append(UpdateTask(task_id=task_id,
+                              artifacts=[*current, Artifact(path=landed["compareUrl"], label=label)]))
+    try:
+        ctx.submit(ops, f"{run_id} pushed to {landed['branch']}")
+    except TaskGraphError:
+        pass  # the push happened; the run step below still records it
+    if ctx.runlog is not None:
+        ctx.runlog.add(run_id, task_id, "landing", {"state": "pushed", **landed})
+
+
+def landing_finish_tool(ctx: ToolContext, run_id: str, task_id: str) -> ToolDef:
+    """finish_run for a run on a repository: on success the commits land on main first."""
+    from workspaces import LandingError
+
+    def finish_run(outcome: Literal["succeeded", "failed"], summary: str) -> dict:
+        """End your run. outcome 'succeeded' when the task is done: your commits
+        are then rebased onto the latest main, the project's checks run, and
+        they are pushed to main (if a check fails you get its output and one
+        chance to fix it; a rebase conflict fails the run). 'failed' when you
+        cannot finish it: nothing is pushed. summary: what you did, what is left,
+        where the results are. Call it exactly once, as your last action."""
+        rw = ctx.need("workspace")
+        runs = ctx.need("runs")
+        if outcome != "succeeded":
+            return runs.finish(ctx.actor, run_id, outcome, summary)
+        try:
+            landed = rw.land()
+        except LandingError as e:
+            if e.kind == "dirty":
+                raise TaskGraphError("invalid", str(e)) from None
+            if ctx.runlog is not None:
+                ctx.runlog.add(run_id, task_id, "landing",
+                               {"state": "failed", "kind": e.kind, "error": str(e), "output": e.output})
+            if e.kind == "checks" and rw.check_failures == 0:
+                rw.check_failures += 1
+                raise TaskGraphError(
+                    "checks_failed",
+                    f"{e}. Output:\n{e.output}\n\nYour commits are now on top of the latest main. "
+                    "Fix the cause, commit, and call finish_run again; if the checks fail again "
+                    "the run fails.") from None
+            note = f"{summary}\n\nNot pushed: {e}"
+            if e.output:
+                note += f"\n{e.output[-1500:]}"
+            run = runs.finish(ctx.actor, run_id, "failed", note)
+            return {"run": run.dump(), "pushed": False, "error": str(e),
+                    "note": "the run failed; nothing was pushed"}
+        if landed["pushed"]:
+            record_landing(ctx, run_id, task_id, landed)
+            shas = ", ".join(c["short"] for c in landed["commits"][:10])
+            summary = f"{summary}\n\nPushed to {landed['branch']}: {shas}"
+        run = runs.finish(ctx.actor, run_id, outcome, summary)
+        return {"run": run.dump(), "pushed": landed["pushed"],
+                "commits": [f"{c['short']} {c['subject']}" for c in landed["commits"]],
+                "compareUrl": landed.get("compareUrl")}
+
+    return tool(finish_run)
+
+
+# --------------------------------------------------------------------------
 # Tool sets
 # --------------------------------------------------------------------------
 
@@ -850,6 +1002,9 @@ def worker_tools(ctx: ToolContext, *, run_id: str, task_id: str) -> list[ToolDef
         tools = [x for x in tools if x.name not in ("save_artifact", "list_artifacts", "read_artifact")]
     if ctx.issues is not None:
         tools += issue_tools(ctx)
+    if ctx.workspace is not None:  # the project has a repository: code tools, landing on finish
+        tools = [x for x in tools if x.name != "finish_run"]
+        tools += [*code_tools(ctx), landing_finish_tool(ctx, run_id, task_id)]
     return tools
 
 

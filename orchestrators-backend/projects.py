@@ -80,6 +80,9 @@ class ProjectRegistry:
                     " VALUES (?, ?, ?, NULL, ?)",
                     (pid, name, desc, _now()),
                 )
+            cols = {r["name"] for r in c.execute("PRAGMA table_info(projects)").fetchall()}
+            if "workspace" not in cols:  # repository config (workspaces.py), JSON or NULL
+                c.execute("ALTER TABLE projects ADD COLUMN workspace TEXT")
             self._ids = {r["id"] for r in c.execute("SELECT id FROM projects").fetchall()}
 
     @staticmethod
@@ -139,6 +142,29 @@ class ProjectRegistry:
             with self.db.tx() as c:
                 c.execute(f"UPDATE projects SET {', '.join(sets)} WHERE id = ?", (*args, pid))
         return self.get(pid)  # type: ignore[return-value]
+
+    def workspace(self, pid: str) -> Any:
+        """The project's repository config (workspaces.WorkspaceConfig) or None."""
+        from workspaces import WorkspaceConfig
+
+        with self.db.read() as c:
+            r = c.execute("SELECT workspace FROM projects WHERE id = ?", (pid,)).fetchone()
+        if not r or not r["workspace"]:
+            return None
+        return WorkspaceConfig.model_validate_json(r["workspace"])
+
+    def set_workspace(self, pid: str, config: Any) -> Any:
+        """Set (a WorkspaceConfig or dict) or clear (None) the project's repository."""
+        from workspaces import WorkspaceConfig
+
+        if not self.exists(pid):
+            raise ProjectError("not_found", f"project '{pid}' not found")
+        if config is not None and not isinstance(config, WorkspaceConfig):
+            config = WorkspaceConfig.model_validate(config)
+        body = config.model_dump_json(by_alias=True) if config is not None else None
+        with self.db.tx() as c:
+            c.execute("UPDATE projects SET workspace = ? WHERE id = ?", (body, pid))
+        return config
 
     def brief(self, pid: str | None = None) -> str:
         """Markdown section for agent prompts."""
@@ -262,7 +288,7 @@ class ProjectMiddleware:
 
 
 def build_router(registry: ProjectRegistry, viewers: Callable[[], list[dict[str, Any]]]):
-    from fastapi import APIRouter, HTTPException, Request
+    from fastapi import APIRouter, Body, HTTPException, Request
     from pydantic import BaseModel
 
     from identity import current_user
@@ -307,5 +333,28 @@ def build_router(registry: ProjectRegistry, viewers: Callable[[], list[dict[str,
     @r.patch("/{pid}")
     def update(pid: str, body: UpdateBody):
         return with_viewers([call(registry.update, pid, body.name, body.description)])[0]
+
+    def workspace_out(pid: str, config: Any) -> dict[str, Any]:
+        if config is None:
+            return {"projectId": pid, "workspace": None}
+        return {"projectId": pid, "workspace": config.dump(), "webUrl": config.web()}
+
+    @r.get("/{pid}/workspace")
+    def get_workspace(pid: str):
+        """The project's repository: remote, clone path, branch, named checks."""
+        if not registry.exists(pid):
+            raise HTTPException(404, {"code": "not_found", "message": f"project '{pid}' not found"})
+        return workspace_out(pid, registry.workspace(pid))
+
+    @r.put("/{pid}/workspace")
+    def put_workspace(pid: str, body: dict[str, Any] | None = Body(default=None)):
+        """Set the repository config (WorkspaceConfig JSON), or clear it with null."""
+        from pydantic import ValidationError
+
+        try:
+            config = call(registry.set_workspace, pid, body or None)
+        except ValidationError as e:
+            raise HTTPException(422, {"code": "invalid", "message": str(e)}) from None
+        return workspace_out(pid, config)
 
     return r

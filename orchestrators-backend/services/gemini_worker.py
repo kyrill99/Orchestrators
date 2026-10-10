@@ -21,6 +21,10 @@ API (google-genai `client.interactions.create`):
    starts a fresh interaction from a recap (brief, scratchpad, artifacts, last
    tool calls, the tool results not yet delivered), at most MAX_RESEEDS times.
 
+When the task's project has a repository (workspaces.py), the run first gets a
+fresh git worktree from origin/main, the agent gets the code tools and the
+repository rules (CODE), and finish_run(succeeded) lands its commits on main.
+
 Runs live in this process. If it exits (self-update restarts the service),
 the next process marks them 'lost' via RunManager.reconcile, and the engine
 or a human restarts them; the new attempt's brief carries the scratchpad,
@@ -51,6 +55,7 @@ from taskgraph.models import AgentRun, RunStatus, Task
 from taskgraph.runlog import RunLog, Scratchpads, truncate
 from taskgraph.runs import OnExit, RunManager
 from taskgraph.service import TaskGraphService
+from workspaces import RunWorkspace, Workspace, WorkspaceError
 
 log = logging.getLogger("services.gemini_worker")
 
@@ -69,7 +74,8 @@ results, open questions, next steps. It is how you, a later attempt and the huma
 up the work. Put substantial results there or in the task description, not only in chat.
 - Post short progress notes with add_comment when you reach a milestone, and set \
 progress with update_my_task.
-- You have no shell and no file system, but you have the web: use google_search to find \
+- You have no shell, and no file system unless your project has a repository (then see \
+"Working on the repository"). You have the web: use google_search to find \
 pages and url_context to open and read any URL (docs, a GitHub repo, an article). \
 Use google_search for facts you are unsure of \
 and code_execution for calculations. save_artifact stores files on your task.
@@ -134,6 +140,33 @@ code_execution; use code_execution only for computing data.
 - Skip the report only when there is nothing to read: pure bookkeeping or restructuring \
 the graph. Then say in the summary why there is no report."""
 
+CODE = """## Working on the repository
+
+Your task's project has a git repository. You work in your own checkout of it (a fresh \
+worktree from the latest main; see "Repository" in the brief) with the code tools: \
+list_files, search_code, read_file, edit_file, write_file, delete_file, git_status, \
+git_diff, run_check and commit. There is no shell: run_check runs only the project's \
+named checks.
+- Investigate before you edit: find the relevant code with list_files and search_code and \
+read it. Never guess what a file contains.
+- Make small, focused changes that do the task and match the repository's style (naming, \
+formatting, structure). No unrelated refactors, reformatting or drive-by fixes; file \
+those as subtasks. Use edit_file for changes, write_file for new files.
+- Run the relevant checks (run_check) after editing and fix what they report.
+- Commit with a clear message (commit): a short imperative first line, details after a \
+blank line if useful. A few focused commits at most.
+- finish_run(succeeded) rebases your commits onto the latest main, runs the checks again \
+and pushes them straight to main. If you cannot make it work, finish 'failed': nothing \
+is pushed.
+- Your report lists what changed: git_diff(stat_only=true) gives the files and +/- \
+lines; one line per file on why.
+- Never read, write or commit secrets or deployment credentials (.env files, keys, \
+tokens, credentials in deploy configuration), and never weaken auth, security or \
+deployment settings.
+- The Orchestrators app itself: pushing to main does not deploy it. Production updates \
+when someone presses Update, and then everything on main ships, so stay conservative: \
+fix bugs with small, safe changes and keep the demo working."""
+
 NUDGE = (
     "[engine] You replied without calling a tool. Continue the task with your tools, "
     "or call finish_run(outcome, summary) if you are done or cannot continue."
@@ -142,9 +175,11 @@ MAX_NUDGES = 2
 MAX_RESEEDS = 2  # fresh conversations per run after the server-side chain breaks
 
 
-def worker_instructions() -> str:
-    """Shared identity + worker role card (agent_identity/), then the rules of this runner."""
-    return f"{system_prompt('worker')}\n\n## This runner\n\n{SYSTEM}"
+def worker_instructions(code: bool = False) -> str:
+    """Shared identity + worker role card (agent_identity/), then the rules of this
+    runner (+ the repository rules when the run has a worktree)."""
+    text = f"{system_prompt('worker')}\n\n## This runner\n\n{SYSTEM}"
+    return f"{text}\n\n{CODE}" if code else text
 
 
 def _env_int(name: str, default: int) -> int:
@@ -180,6 +215,8 @@ class GeminiRunner:
         max_seconds: float | None = None,
         builtin_tools: list[str] | None = None,
         retry_delays: tuple[float, ...] = (2.0, 6.0),
+        workspace: Callable[[], Any] | None = None,
+        project_id: str | None = None,
     ) -> None:
         self.service = service
         self.runlog = runlog
@@ -200,6 +237,11 @@ class GeminiRunner:
             builtin_tools = [t.strip() for t in raw.split(",") if t.strip()]
         self.builtin_tools = builtin_tools
         self.retry_delays = retry_delays
+        # The project's repository config (workspaces.WorkspaceConfig) or None,
+        # read when a run starts; main.py sets it per project.
+        self.workspace = workspace
+        if project_id is not None:
+            self.project_id = project_id
         self.host = socket.gethostname()
         self._live: dict[str, _Live] = {}
         self._lock = threading.Lock()
@@ -247,8 +289,10 @@ class GeminiRunner:
     # ---- the loop ----------------------------------------------------------
 
     def _thread(self, run: AgentRun, task: Task, on_exit: OnExit, live: _Live) -> None:
+        loop = None
         try:
-            _Loop(self, run, task, on_exit, live).run()
+            loop = _Loop(self, run, task, on_exit, live)
+            loop.run()
         except Exception as e:  # last resort: never leave a run dangling
             log.exception("run %s crashed", run.id)
             self.runlog.add(run.id, run.task_id, "error", {"message": f"worker crashed: {e}"})
@@ -257,6 +301,13 @@ class GeminiRunner:
         finally:
             with self._lock:
                 self._live.pop(run.id, None)
+                active = set(self._live)
+            rw = loop.workspace if loop is not None else None
+            if rw is not None:  # keep the newest keepRuns worktrees for debugging
+                try:
+                    rw.ws.cleanup(active=active)
+                except Exception:  # noqa: BLE001 - disk housekeeping only
+                    log.exception("worktree cleanup failed")
 
 
 class _Loop:
@@ -266,13 +317,43 @@ class _Loop:
         self.task = task
         self.on_exit = on_exit
         self.live = live
-        self.tools = AgentTools(
-            runner.memory, runner.service, agent_id=run.agent.id,
-            project_id=getattr(runner, "project_id", None),  # set per project in main.py
+        self.workspace: RunWorkspace | None = None
+        self.tools = self.make_tools()
+
+    def make_tools(self) -> AgentTools:
+        r, run, task = self.r, self.run_, self.task
+        return AgentTools(
+            r.memory, r.service, agent_id=run.agent.id,
+            project_id=getattr(r, "project_id", None),  # set per project in main.py
             toolset=lambda ctx: worker_tools(ctx, run_id=run.id, task_id=task.id),
-            runs=RunManager(runner.service), scratchpads=runner.scratchpads, runlog=runner.runlog,
-            issues=runner.issues, artifacts=runner.artifacts,
+            runs=RunManager(r.service), scratchpads=r.scratchpads, runlog=r.runlog,
+            issues=r.issues, artifacts=r.artifacts, workspace=self.workspace,
         )
+
+    def open_workspace(self) -> bool:
+        """A fresh worktree when the project has a repository. False: the run failed."""
+        get = getattr(self.r, "workspace", None)
+        try:
+            config = get() if get is not None else None
+        except Exception as e:  # noqa: BLE001
+            log.warning("could not read the workspace config: %s", e)
+            config = None
+        if config is None:
+            return True
+        try:
+            ws = Workspace(config, getattr(self.r, "project_id", None) or "default")
+            previous = [p.id for p in reversed(self.r.service.runs(task_id=self.task.id))
+                        if p.id != self.run_.id]
+            self.workspace = ws.start_run(self.run_.id, self.task.id, previous)
+        except (WorkspaceError, OSError) as e:
+            self.end("failed", f"could not prepare the repository checkout: {truncate(str(e), 500)}")
+            return False
+        rw = self.workspace
+        self.log("status", {"state": "workspace", "note": f"{config.remote} @ "
+                            f"{(rw.base or 'empty repository')[:8]} on {rw.branch}",
+                            "path": str(rw.path), "base": rw.base, "carried": rw.carried})
+        self.tools = self.make_tools()
+        return True
 
     def log(self, kind: str, payload: dict[str, Any]) -> None:
         self.r.runlog.add(self.run_.id, self.task.id, kind, payload)  # type: ignore[arg-type]
@@ -289,15 +370,20 @@ class _Loop:
 
     def run(self) -> None:
         r = self.r
-        tools = self.tools.declarations() + [{"type": t} for t in r.builtin_tools]
         self.log("status", {"state": "started", "model": r.model, "attempt": self.run_.attempt,
                             "maxSteps": r.max_steps, "maxSeconds": r.max_seconds})
+        if not self.open_workspace():
+            return
+        tools = self.tools.declarations() + [{"type": t} for t in r.builtin_tools]
         client = r.client_factory()
         deadline = time.monotonic() + r.max_seconds
-        base = {"model": r.model, "tools": tools, "system_instruction": worker_instructions(),
+        base = {"model": r.model, "tools": tools,
+                "system_instruction": worker_instructions(code=self.workspace is not None),
                 "generation_config": {"thinking_summaries": "auto"}}
         input_: Any = build_brief(r.service, r.scratchpads, r.runlog, r.memory, self.run_, self.task,
                                   project_id=getattr(r, "project_id", None))
+        if self.workspace is not None:
+            input_ = input_.replace("\n\nDo the task now.", f"\n\n{repo_brief(self.workspace)}\n\nDo the task now.")
         brief_fn = getattr(r, "project_brief", None)  # set per project in main.py
         if brief_fn is not None and isinstance(input_, str):
             try:
@@ -595,6 +681,24 @@ def _python_pid_alive(pid: int) -> bool:
         except PermissionError:
             return True
         return True
+
+
+def repo_brief(rw: RunWorkspace) -> str:
+    """The brief's section on the run's repository checkout."""
+    cfg = rw.ws.config
+    lines = ["## Repository", f"Remote: {cfg.remote} (branch {cfg.branch})"]
+    if rw.base:
+        lines.append(f"Your worktree starts at {rw.base[:8]}, the latest origin/{cfg.branch}, "
+                     f"on branch {rw.branch}.")
+    else:
+        lines.append("The repository is still empty: your commits will be its first.")
+    lines += rw.notes
+    if cfg.checks:
+        lines.append("Checks (run_check):")
+        lines += [f"- {c.name}: {c.description or c.command}" for c in cfg.checks]
+    else:
+        lines.append("No checks are configured: read your change over carefully before you commit.")
+    return "\n".join(lines)
 
 
 def build_brief(
