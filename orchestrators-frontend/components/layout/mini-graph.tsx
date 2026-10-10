@@ -1,14 +1,11 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { apiBaseUrl, type AgentRun } from "@/lib/api";
-import {
-  edges as fixtureEdges,
-  tasks as fixtureTasks,
-  type TaskStatus,
-} from "@/lib/fixtures";
-import { layeredLayout, type LayoutEdge } from "@/lib/mini-graph-layout";
+import type { Task, TaskEdge, TaskStatus } from "@/lib/fixtures";
+import { layoutGraph, mapApiTask, type ApiTask } from "@/lib/taskgraph-api";
 import { cn } from "@/lib/utils";
 
 const POLL_MS = 3000;
@@ -18,51 +15,48 @@ const PAD = 8;
 /** Accent used for agent activity elsewhere (graph node agent badge, Done). */
 const ACCENT = "#5E6AD2";
 
-type MiniTask = { id: string; title: string; status: TaskStatus };
-
-/** Ids and edges only; a new object means the layout must be recomputed. */
-type Structure = { key: string; ids: string[]; edges: LayoutEdge[] };
+/** Tasks and edges; a new object means the layout must be recomputed. */
+type Structure = { key: string; tasks: Task[]; edges: TaskEdge[] };
 
 type MiniGraphState = {
+  /** False when the backend could not be reached. */
+  online: boolean;
   structure: Structure;
-  tasks: Map<string, MiniTask>;
+  tasks: Map<string, { title: string; status: TaskStatus }>;
   /** taskId -> agent id of the active run. */
   running: Map<string, string>;
 };
 
 type BackendGraph = {
-  tasks?: MiniTask[];
-  edges?: LayoutEdge[];
+  tasks?: ApiTask[];
+  edges?: TaskEdge[];
   activeRuns?: AgentRun[];
 };
 
-function structureKey(ids: string[], edges: LayoutEdge[]) {
-  return `${ids.join(",")}|${edges.map((e) => `${e.source}>${e.target}`).join(",")}`;
+function structureKey(tasks: Task[], edges: TaskEdge[]) {
+  return `${tasks.map((t) => t.id).join(",")}|${edges.map((e) => `${e.source}>${e.target}`).join(",")}`;
 }
 
-/**
- * Like the project graph view, fall back to the demo fixtures while the
- * backend graph is empty or unreachable.
- */
+/** Keeps the previous structure object while ids and edges are unchanged. */
 function toState(graph: BackendGraph | null, previous: MiniGraphState | null) {
-  const live = graph?.tasks?.length ? graph : null;
-  const tasks = live?.tasks ?? fixtureTasks;
-  const edges = (live?.edges ?? fixtureEdges).map(({ source, target }) => ({
+  const tasks = (graph?.tasks ?? []).map(mapApiTask);
+  const edges = (graph?.edges ?? []).map(({ id, source, target }) => ({
+    id,
     source,
     target,
   }));
-  const ids = tasks.map((t) => t.id);
-  const key = structureKey(ids, edges);
+  const key = structureKey(tasks, edges);
   return {
+    online: graph !== null,
     structure:
       previous && previous.structure.key === key
         ? previous.structure
-        : { key, ids, edges },
+        : { key, tasks, edges },
     tasks: new Map(
-      tasks.map((t) => [t.id, { id: t.id, title: t.title, status: t.status }]),
+      tasks.map((t) => [t.id, { title: t.title, status: t.status }]),
     ),
     running: new Map(
-      (live?.activeRuns ?? []).map((run) => [run.taskId, run.agent.id]),
+      (graph?.activeRuns ?? []).map((run) => [run.taskId, run.agent.id]),
     ),
   } satisfies MiniGraphState;
 }
@@ -129,39 +123,64 @@ export function MiniGraph() {
   const structure = graph?.structure;
   const layout = useMemo(() => {
     if (!structure) return null;
-    const { points, layers, maxLayerSize } = layeredLayout(
-      structure.ids,
-      structure.edges,
-    );
+    // Same layered top-to-bottom layout as the project graph, scaled to fit.
+    const raw = Object.entries(layoutGraph(structure.tasks, structure.edges));
+    if (raw.length === 0) return null;
+    const xs = [...new Set(raw.map(([, p]) => p.x))];
+    const ys = [...new Set(raw.map(([, p]) => p.y))];
+    const [minX, maxX] = [Math.min(...xs), Math.max(...xs)];
+    const [minY, maxY] = [Math.min(...ys), Math.max(...ys)];
     const innerW = WIDTH - PAD * 2;
     const innerH = HEIGHT - PAD * 2;
+    const scale = (v: number, min: number, max: number, size: number) =>
+      max === min ? size / 2 : ((v - min) / (max - min)) * size;
     const spacing = Math.min(
-      layers > 1 ? innerW / (layers - 1) : innerW,
-      innerH / maxLayerSize,
+      xs.length > 1 ? innerW / (xs.length - 1) : innerW,
+      ys.length > 1 ? innerH / (ys.length - 1) : innerH,
     );
     const radius = Math.max(1.5, Math.min(4, spacing * 0.32));
     const pos = new Map<string, { x: number; y: number }>();
-    for (const [id, p] of points) {
-      pos.set(id, { x: PAD + p.x * innerW, y: PAD + p.y * innerH });
+    for (const [id, p] of raw) {
+      pos.set(id, {
+        x: PAD + scale(p.x, minX, maxX, innerW),
+        y: PAD + scale(p.y, minY, maxY, innerH),
+      });
     }
     const paths = structure.edges.flatMap(({ source, target }) => {
       const a = pos.get(source);
       const b = pos.get(target);
       if (!a || !b) return [];
-      const mid = (a.x + b.x) / 2;
+      const mid = (a.y + b.y) / 2;
       return [
         {
           source,
           target,
-          d: `M${a.x},${a.y} C${mid},${a.y} ${mid},${b.y} ${b.x},${b.y}`,
+          d: `M${a.x},${a.y} C${a.x},${mid} ${b.x},${mid} ${b.x},${b.y}`,
         },
       ];
     });
     return { pos, paths, radius };
   }, [structure]);
 
-  if (!graph || !layout) {
+  if (!graph) {
     return <div className="h-[118px] rounded-lg border border-sidebar-border" />;
+  }
+
+  if (!layout) {
+    // Same as the project graph view: no fixtures, just a quiet empty state.
+    return (
+      <Link
+        href="/project"
+        className="flex h-[118px] flex-col items-center justify-center gap-1 rounded-lg border border-dashed border-sidebar-border text-[11px] text-muted-foreground transition-colors hover:border-foreground/15 hover:text-foreground"
+      >
+        <span className="flex gap-1.5" aria-hidden>
+          <span className="size-1.5 rounded-full border border-current opacity-50" />
+          <span className="size-1.5 rounded-full border border-current opacity-50" />
+          <span className="size-1.5 rounded-full border border-current opacity-50" />
+        </span>
+        {graph.online ? "No tasks yet" : "Task graph offline"}
+      </Link>
+    );
   }
 
   const runningCount = graph.running.size;
@@ -231,7 +250,7 @@ export function MiniGraph() {
             );
           })}
         </g>
-        {graph.structure.ids.map((id) => {
+        {graph.structure.tasks.map(({ id }) => {
           const p = layout.pos.get(id);
           const task = graph.tasks.get(id);
           if (!p || !task) return null;
