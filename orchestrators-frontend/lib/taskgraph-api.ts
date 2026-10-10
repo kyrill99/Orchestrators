@@ -139,6 +139,27 @@ export async function setTaskStatus(
   }
 }
 
+export type TaskOp = Record<string, unknown> & { op: string };
+
+/** Submit a batch of task graph ops (atomic: all or nothing). */
+export async function submitTaskOps(ops: TaskOp[], reason: string): Promise<void> {
+  const response = await fetch(`${apiBaseUrl()}/api/taskgraph/changes`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ actor: GUI_ACTOR, reason, ops }),
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    const detail = body?.detail;
+    const message =
+      (typeof detail === "string" && detail) ||
+      detail?.message ||
+      body?.message ||
+      "Could not save the change";
+    throw new Error(message);
+  }
+}
+
 /** Simple layered layout from blockedBy edges (top → bottom). */
 export function layoutGraph(
   tasks: Task[],

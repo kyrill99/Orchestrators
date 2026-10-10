@@ -81,9 +81,11 @@ only shows teammates in the same project.
 
 ## Bug reports
 
-Creating an issue (`POST /api/issues`) also creates a task `Bug: <title>` in the
-`orchestrators` project graph, with the issue reference in its description, so it
-shows up in that project's graph, timeline and can be picked up by a worker.
+The `orchestrators` project has one standing task, `work-open-issues` ("Work through
+open issues"), created at startup. Its brief tells the task agent to go through the open
+issues (list, investigate, comment, close). When a human files a bug (an issue becomes
+open), the task gets a comment "New issue #n: ..." and is reopened if it was done, so
+the engine picks it up again. Issues filed by task agents do not wake it.
 
 ## Risks / follow-ups
 

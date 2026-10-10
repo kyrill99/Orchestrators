@@ -176,31 +176,61 @@ configure_tools(AgentTools(memory, taskgraph, issues=issues))
 configure_brief(projects.brief)
 
 
-def _file_bug_task(issue: dict) -> None:
-    """Bug reports become tasks in the Orchestrators project's graph."""
+ISSUE_TASK_ID = "work-open-issues"
+ISSUE_TASK_BRIEF = (
+    "Standing task: work through the open issues of the Orchestrators app (bug reports "
+    "from the in-app bug button land in the issue list).\n\n"
+    "1. list_issues (open), pick the most important ones you can handle.\n"
+    "2. For each: read it (get_issue), investigate, and comment what you found and what "
+    "you changed or propose (comment_on_issue). Close it with a reason when it is fixed, a "
+    "duplicate or not a bug (close_issue).\n"
+    "3. Finish your run with a summary of which issues you handled and which remain.\n"
+    "New issues reopen this task automatically."
+)
+
+
+def _issue_task(actor_id: str = "orchestrators") -> TaskGraphService:
+    """Make sure the Orchestrators project has its standing open-issues task."""
     from taskgraph import Actor
     from taskgraph.models import CreateTask
 
-    number = issue.get("number")
-    title = (issue.get("title") or "Bug report").strip()
+    service = project_graphs.service(ORCHESTRATORS_PROJECT)
+    service.graph()  # sync with the store
+    if ISSUE_TASK_ID not in service.state.tasks:
+        service.submit(
+            Actor(type="human", id=actor_id),
+            [CreateTask(id=ISSUE_TASK_ID, title="Work through open issues",
+                        description=ISSUE_TASK_BRIEF)],
+            reason="standing task for bug reports",
+        )
+    return service
+
+
+def _wake_issue_task(issue: dict) -> None:
+    """A human filed a bug: note it on the standing task and reopen it if it was done."""
+    from taskgraph import Actor
+    from taskgraph.models import AddComment, SetStatus
+
     author = (issue.get("author") or {}).get("email") or "reporter"
     if str(author).startswith("agent:"):
-        return  # filed by a task agent about its own project's work, not an app bug report
-    task_id = f"bug-{number}" if number else None
-    service = project_graphs.service(ORCHESTRATORS_PROJECT)
-    if task_id and task_id in service.state.tasks:
-        return
-    body = (issue.get("description") or "").strip()
-    ref = f"Issue #{number}" if number else f"Issue {issue.get('id')}"
-    service.submit(
-        Actor(type="human", id=str(author)),
-        [CreateTask(id=task_id, title=f"Bug: {title}"[:200],
-                    description=f"{body}\n\n{ref} (see the Issues page).".strip())],
-        reason="bug report filed",
-    )
+        return  # filed by a task agent about its own project's work
+    service = _issue_task(str(author))
+    number = issue.get("number")
+    ref = f"#{number}" if number else str(issue.get("id"))
+    ops = [AddComment(task_id=ISSUE_TASK_ID,
+                      body=f"New issue {ref}: {(issue.get('title') or '').strip()}")]
+    if service.state.tasks[ISSUE_TASK_ID].status in ("closed", "in-review"):
+        ops.append(SetStatus(task_id=ISSUE_TASK_ID, status="open"))
+    service.submit(Actor(type="human", id=str(author)), ops, reason="new bug report")
 
 
-issues.on_open = _file_bug_task
+issues.on_open = _wake_issue_task
+try:
+    _issue_task()
+except Exception:  # noqa: BLE001 - never block startup on this
+    import logging
+
+    logging.getLogger(__name__).warning("could not create the open-issues task", exc_info=True)
 
 # Must match DATA in deploy/gcp/update.sh.
 app.include_router(build_selfupdate_router("data"))
