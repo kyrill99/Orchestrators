@@ -389,3 +389,16 @@ export type TaskArtifactFile = {
 export function fetchTaskArtifacts(taskId: string): Promise<TaskArtifactFile[]> {
   return request(`/api/artifacts?task_id=${encodeURIComponent(taskId)}`);
 }
+
+/** An artifact in the project-wide list, with its place among the versions of (task, filename). */
+export type ProjectArtifactFile = TaskArtifactFile & {
+  /** 1-based, ordered by createdAt within (taskId, filename). */
+  version: number;
+  versions: number;
+  latest: boolean;
+};
+
+/** Every artifact of the current project, oldest first. */
+export function fetchProjectArtifacts(): Promise<ProjectArtifactFile[]> {
+  return request(`/api/artifacts`);
+}

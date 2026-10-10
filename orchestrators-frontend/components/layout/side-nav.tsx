@@ -7,6 +7,7 @@ import {
   Brain,
   Bug,
   ChevronDown,
+  FileText,
   MousePointer2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -22,6 +23,7 @@ const items = [
   { href: "/agent", label: "Agent", icon: MousePointer2, scoped: true },
   { href: "/project", label: "Project", icon: Box, scoped: true },
   { href: "/memory", label: "Memory", icon: Brain, scoped: true },
+  { href: "/artifacts", label: "Artifacts", icon: FileText, scoped: true },
   { href: "/issues", label: "Issues", icon: Bug, scoped: false },
 ] as const;
 

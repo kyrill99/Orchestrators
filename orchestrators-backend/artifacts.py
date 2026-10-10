@@ -16,6 +16,8 @@ services/agent_tools.py use.
 REST (everyone signed in sees everything, as elsewhere):
 
     GET /api/artifacts?task_id=<id>   a task's artifacts in the current project
+    GET /api/artifacts                every artifact of the current project, with
+                                      version / versions / latest per (task, filename)
     GET /api/artifacts/{id}           metadata
     GET /api/artifacts/{id}/view      the file inline (HTML rendered, sandboxed)
     GET /api/artifacts/{id}/download  the file as an attachment
@@ -248,6 +250,26 @@ class ArtifactStore:
             ).fetchall()
         return [self._row(r) for r in rows]
 
+    def list_project(self, project_id: str) -> list[dict[str, Any]]:
+        """Every artifact of a project, oldest first. Rows with the same
+        (task, filename) are versions of one artifact: each row gets `version`
+        (1-based by created_at), `versions` (count) and `latest`."""
+        with self.db.read() as c:
+            rows = c.execute(
+                "SELECT * FROM artifacts WHERE project_id = ? ORDER BY created_at, id",
+                (project_id,),
+            ).fetchall()
+        out = [self._row(r) for r in rows]
+        groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for meta in out:
+            groups.setdefault((meta["taskId"], meta["filename"]), []).append(meta)
+        for metas in groups.values():
+            for i, meta in enumerate(metas, start=1):
+                meta["version"] = i
+                meta["versions"] = len(metas)
+                meta["latest"] = i == len(metas)
+        return out
+
     def get(self, artifact_id: str) -> dict[str, Any]:
         with self.db.read() as c:
             r = c.execute("SELECT * FROM artifacts WHERE id = ?", (artifact_id,)).fetchone()
@@ -311,7 +333,10 @@ def build_router(store: ArtifactStore) -> APIRouter:
             raise HTTPException(STATUS_FOR_CODE.get(e.code, 400), {"code": e.code, "message": e.message}) from None
 
     @r.get("")
-    def list_artifacts(task_id: str = Query(..., description="Task id in the current project")):
+    def list_artifacts(task_id: str | None = Query(
+        None, description="Task id in the current project; omit for every artifact of the project")):
+        if task_id is None:
+            return store.list_project(current_project.get())
         return store.list(current_project.get(), task_id)
 
     @r.get("/{artifact_id}")

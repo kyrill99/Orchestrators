@@ -21,6 +21,7 @@ const nextConfig: NextConfig = {
       ...toProject("/project", "/project"),
       ...toProject("/tasks/:id", "/tasks/:id"),
       ...toProject("/memory", "/memory"),
+      ...toProject("/artifacts", "/artifacts"),
       { source: "/p/:project", destination: "/p/:project/project", permanent: false },
     ];
   },
