@@ -28,7 +28,7 @@ echo "==> Public URL will be https://${HOST}"
 
 echo "==> Packages"
 export DEBIAN_FRONTEND=noninteractive
-grep -l 'cloudsmith.io/public/caddy' /etc/apt/sources.list.d/* 2>/dev/null | xargs -r rm -f
+grep -l 'cloudsmith.io/public/caddy' /etc/apt/sources.list.d/* 2>/dev/null | xargs -r rm -f || true
 apt-get update -qq
 apt-get install -y -qq git curl ca-certificates gnupg python3 python3-venv libcap2-bin file >/dev/null
 
@@ -46,7 +46,7 @@ if ! command -v node >/dev/null || [[ "$(node -v | cut -d. -f1 | tr -d v)" -lt 2
 fi
 
 # Remove a broken third-party Caddy apt source from earlier runs.
-grep -l 'cloudsmith.io/public/caddy' /etc/apt/sources.list.d/* 2>/dev/null | xargs -r rm -f
+grep -l 'cloudsmith.io/public/caddy' /etc/apt/sources.list.d/* 2>/dev/null | xargs -r rm -f || true
 if [[ ! -f /lib/systemd/system/caddy.service && ! -f /etc/systemd/system/caddy.service ]]; then
   echo "==> Caddy (distro package)"
   apt-get update -qq && apt-get install -y -qq caddy >/dev/null 2>&1 || echo "   distro caddy not available, using GitHub release"
