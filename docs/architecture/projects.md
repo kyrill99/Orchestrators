@@ -135,3 +135,48 @@ are `default`). `GET /api/conversations` lists only the current project's; live
 `conversation` events carry `project` and the frontend ignores other projects'. When a
 message is posted, the planner runs in the **conversation's** project (not the poster's
 current one), so its tools, board summary and project brief always match that chat.
+
+## Repositories (task agents that push code)
+
+A project may have a git repository (`workspaces.py`; a JSON `workspace` column on
+`projects`). Gemini runs on its tasks then work in a fresh worktree
+`<root>/.runs/<run-id>` from `origin/<branch>`, get code tools (list/read/search/write/
+edit/delete files, git status/diff, named checks, commit) and push to `<branch>` when they
+finish as succeeded: fetch, rebase, run the checks, push. Commits are by
+fibr <vectra14@gmail.com> with `Agent-Run:` / `Task:` trailers. The newest `keepRuns`
+worktrees are kept for debugging. Checks are fixed shell commands run in the worktree
+root with a minimal environment (no API keys) and `timeoutSeconds`.
+
+`GET /api/projects/{id}/workspace` shows it, `PUT` sets it (a body of `null` clears it).
+On the VM (backend on 127.0.0.1:8000, as any user that can reach it):
+
+```sh
+curl -s -X PUT http://127.0.0.1:8000/api/projects/orchestrators/workspace \
+  -H 'content-type: application/json' -d '{
+  "remote": "git@github-orchestrators:kyrill99/Orchestrators.git",
+  "root": "/home/orchestrators/workspaces/orchestrators",
+  "branch": "main",
+  "keepRuns": 5,
+  "checks": [
+    {"name": "backend-tests", "timeoutSeconds": 900,
+     "description": "backend unit tests (python -m unittest discover -s tests in orchestrators-backend)",
+     "command": "cd orchestrators-backend && /opt/orchestrators/orchestrators-backend/.venv/bin/python -m unittest discover -s tests"},
+    {"name": "frontend-lint", "timeoutSeconds": 300,
+     "description": "eslint on the frontend files you changed",
+     "command": "cd orchestrators-frontend && ln -sfn /opt/orchestrators/orchestrators-frontend/node_modules node_modules && files=$(git diff --name-only --relative --diff-filter=d origin/main -- \"*.ts\" \"*.tsx\" \"*.js\" \"*.mjs\") && if [ -z \"$files\" ]; then echo \"no changed frontend files\"; else node_modules/.bin/eslint $files; fi"}
+  ]}'
+
+curl -s -X PUT http://127.0.0.1:8000/api/projects/jfloorgame/workspace \
+  -H 'content-type: application/json' -d '{
+  "remote": "git@github-jfloor-game:fibr/jfloor-game.git",
+  "root": "/home/orchestrators/workspaces/jfloor-game",
+  "branch": "main",
+  "checks": []}'
+```
+
+The backend tests reuse the deployed venv read-only (new requirements in a change are not
+installed there). The frontend build is not a check (about 1.5 GB of RAM; the deploy
+builds); `frontend-lint` symlinks the deployed `node_modules` (eslint accepts symlinks,
+only Turbopack does not; `/node_modules` is git-ignored). An empty remote is fine: the
+first run pushes the first commit. Pushing to Orchestrators' main does not deploy; the
+next Update does.

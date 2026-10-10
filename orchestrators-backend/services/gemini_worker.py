@@ -534,6 +534,15 @@ class _Loop:
         lines += ["", "## Artifacts saved on this task"]
         lines += [f"- {a.get('title') or '(untitled)'}: {a.get('filename')}"
                   + (" (this run)" if a.get("runId") == self.run_.id else "") for a in arts] or ["(none)"]
+        if self.workspace is not None:  # code changes live in the worktree, not the conversation
+            try:
+                st = self.workspace.status()
+                lines += ["", "## Your repository checkout now",
+                          f"Branch {st['branch']} from {st['base']}.",
+                          "Commits so far: " + ("; ".join(st["commitsAhead"]) or "none"),
+                          "Uncommitted: " + (", ".join(st["uncommitted"][:40]) or "nothing")]
+            except Exception:  # noqa: BLE001 - context only
+                pass
         steps = self.r.runlog.steps(self.run_.id, limit=5000)
         calls = [s["payload"] for s in steps if s["kind"] == "tool_call"][-20:]
         lines += ["", "## Your last tool calls (oldest first)"]

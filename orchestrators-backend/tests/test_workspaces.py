@@ -336,7 +336,10 @@ class FakeClient:
 
     def create(self, **kwargs):
         self.calls.append(kwargs)
-        return self.script.pop(0)
+        item = self.script.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return NS(**{**vars(item), "id": f"i{len(self.calls)}"})
 
 
 class WorkerTest(RepoCase):
@@ -391,6 +394,27 @@ class WorkerTest(RepoCase):
         task = self.svc.task("fix")
         self.assertEqual(task["status"], "in-review")
         self.assertIn("Pushed 1 commit to main", [a for a in task["activity"] if a["op"] == "comment.add"][-1]["text"])
+
+    def test_a_reseeded_conversation_sees_the_checkout(self):
+        sys.path.insert(0, os.path.dirname(__file__))
+        from test_gemini_engine import THOUGHT_400, FakeAPIError
+
+        client = FakeClient([
+            reply(call("edit_file", {"path": "calc.py", "old": "return a - b", "new": "return a + b"})),
+            reply(call("commit", {"message": "Fix add"})),
+            reply(call("write_file", {"path": "NOTES.md", "content": "wip\n"})),
+            FakeAPIError(400, THOUGHT_400),
+            reply(call("finish_run", {"outcome": "failed", "summary": "stop here"})),
+        ])
+        runner = self.runner(client)
+        runner.retry_delays = (0.01, 0.01)
+        run = RunManager(self.svc, runner).start(H, "fix", "go")
+        self.assertTrue(runner.join(run.id, 30))
+        recap = client.calls[-1]["input"]
+        self.assertIn("## Your repository checkout now", recap)
+        self.assertIn("Fix add", recap)
+        self.assertIn("NOTES.md", recap)
+        self.assertIn("## Repository", recap)  # the original brief's section
 
     def test_no_repository_no_code_tools(self):
         client = FakeClient([reply(call("finish_run", {"outcome": "succeeded", "summary": "ok"}))])
