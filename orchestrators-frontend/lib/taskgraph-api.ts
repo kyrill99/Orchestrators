@@ -1,4 +1,5 @@
-import { apiBaseUrl, GUI_ACTOR } from "@/lib/api";
+import { apiBaseUrl, GUI_ACTOR, type Actor } from "@/lib/api";
+import { syncAssigneeFromBackend } from "@/lib/assignees";
 import type { Task, TaskActivity, TaskEdge, TaskKind, TaskStatus } from "@/lib/fixtures";
 
 export type GraphProject = {
@@ -18,6 +19,7 @@ export type ApiTask = {
   startDate?: string | null;
   endDate?: string | null;
   progress?: number;
+  assignee?: Actor | null;
   activity?: Array<{
     id: string;
     text: string;
@@ -83,7 +85,9 @@ export async function fetchTaskGraph(): Promise<TaskGraphSnapshot> {
     throw new Error(await response.text() || "Could not load task graph");
   }
   const data = await response.json();
-  const tasks = ((data.tasks || []) as ApiTask[]).map(mapApiTask);
+  const rawTasks = (data.tasks || []) as ApiTask[];
+  for (const t of rawTasks) syncAssigneeFromBackend(t.id, t.assignee);
+  const tasks = rawTasks.map(mapApiTask);
   const edges: TaskEdge[] = (data.edges || []).map(
     (e: { id: string; source: string; target: string }) => ({
       id: e.id,
@@ -109,7 +113,9 @@ export async function fetchTask(id: string): Promise<Task | null> {
   if (!response.ok) {
     throw new Error(await response.text() || "Could not load task");
   }
-  return mapApiTask(await response.json());
+  const raw = (await response.json()) as ApiTask;
+  syncAssigneeFromBackend(raw.id, raw.assignee);
+  return mapApiTask(raw);
 }
 
 /** Persist a status change so Project graph / timeline pick it up on the next poll. */

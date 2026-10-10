@@ -5,8 +5,8 @@ import Link from "next/link";
 import { ArrowLeft, Ban, Bot, User, Activity, PenSquare } from "lucide-react";
 import type { Task, TaskActivity, TaskStatus } from "@/lib/fixtures";
 import {
-  loadAssignee,
   saveAssignee,
+  useAssignee,
   type AssigneeId,
 } from "@/lib/assignees";
 import { fetchTask, setTaskStatus } from "@/lib/taskgraph-api";
@@ -36,7 +36,7 @@ export function TaskIssuePage({ id }: { id: string }) {
   const [statusError, setStatusError] = useState<string | null>(null);
   const [statusBusy, setStatusBusy] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [assignee, setAssignee] = useState<AssigneeId>("unassigned");
+  const assignee = useAssignee(id);
   const [comment, setComment] = useState("");
   // Teammates with this task open (and whether they are typing here).
   const here = useAnnouncePresence(`task:${id}`);
@@ -48,10 +48,6 @@ export function TaskIssuePage({ id }: { id: string }) {
     const ids = (data as { taskIds?: string[] } | null)?.taskIds;
     if (type === "resync" || ids?.includes(id)) setVersion((v) => v + 1);
   });
-
-  useEffect(() => {
-    setAssignee(loadAssignee(id));
-  }, [id]);
 
   useEffect(() => {
     let cancelled = false;
@@ -98,7 +94,6 @@ export function TaskIssuePage({ id }: { id: string }) {
   }, [id, version]);
 
   function onAssigneeChange(next: AssigneeId) {
-    setAssignee(next);
     saveAssignee(id, next);
   }
 
