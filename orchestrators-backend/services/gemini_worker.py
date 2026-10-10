@@ -50,7 +50,7 @@ from typing import Any
 
 from agent_identity import system_prompt
 from memory.service import MemoryService
-from services.agent_tools import AgentTools, result_as_text, worker_tools
+from services.agent_tools import AgentTools, decision_tools, result_as_text, worker_tools
 from taskgraph.models import AgentRun, RunStatus, Task
 from taskgraph.runlog import RunLog, Scratchpads, truncate
 from taskgraph.runs import OnExit, RunManager
@@ -167,12 +167,46 @@ deployment settings.
 when someone presses Update, and then everything on main ships, so stay conservative: \
 fix bugs with small, safe changes and keep the demo working."""
 
+DECIDE = """You run in-process as a Gemini agent preparing one decision for the owner. Do it \
+now with your tools; your last call is prepare_decision (or finish_run when you cannot).
+
+1. Read the brief: the decision task, the owner's input (if any), and what each task it \
+waited for produced (run results, comments, reports, pushed commits). Open each blocker's \
+report with read_artifact; use get_task for more of its activity.
+2. Work out the real choice: 2-5 concrete options, each a short label (e.g. "Classic \
+arcade"). Each must be a choice the owner can actually make. If the description or the \
+owner already names a question or options, keep them and add what is missing. If the \
+owner asked for another option or criterion, include it.
+3. Pick the option you recommend and why: judge each against the project's strategy \
+(goals, audience, success criteria) and the evidence, and name the trade-offs.
+4. Save one comparison report on your task: save_artifact(filename="decision.html", \
+title="Decision: <short question>", content=<the page>). Self-contained HTML (inline \
+CSS, no external files), polished and concise (under two minutes to read): lead with \
+the question and your recommendation in 2-3 sentences, then one comparison table (rows: \
+the options; columns: the criteria that matter, plus evidence), the trade-offs, and a \
+"Sources" list linking each blocker's report and code. Use the links from the brief \
+exactly as given (report links like /api/artifacts/<id>/view, commit and file links). \
+Use the same skeleton and style as worker reports: system-ui type, a 780px column, an \
+accent-bordered answer box, light and dark mode.
+5. Call prepare_decision(question, options, recommended, recommendation, context). \
+`context` is short markdown: one line per option with its evidence and the link to its \
+report. That ends your run; the task then waits for the decision.
+
+Do not decide yourself and do not change other tasks. Do not redo the blockers' work: \
+read it. Be efficient: a few reads, one report, then prepare_decision."""
+
 NUDGE = (
     "[engine] You replied without calling a tool. Continue the task with your tools, "
     "or call finish_run(outcome, summary) if you are done or cannot continue."
 )
 MAX_NUDGES = 2
+FINISHING_TOOLS = ("finish_run", "prepare_decision")  # each ends the run
 MAX_RESEEDS = 2  # fresh conversations per run after the server-side chain breaks
+
+
+def decision_instructions() -> str:
+    """Shared identity + the decider role card, then this runner's decision rules."""
+    return f"{system_prompt('decider')}\n\n## This runner\n\n{DECIDE}"
 
 
 def worker_instructions(code: bool = False) -> str:
@@ -297,7 +331,7 @@ class GeminiRunner:
             log.exception("run %s crashed", run.id)
             self.runlog.add(run.id, run.task_id, "error", {"message": f"worker crashed: {e}"})
             if self.service.run(run.id).active:
-                on_exit("failed", None, f"worker crashed: {e}")
+                on_exit("failed", None, f"worker crashed: {e}", failure_kind="infra")
         finally:
             with self._lock:
                 self._live.pop(run.id, None)
@@ -319,6 +353,8 @@ class _Loop:
         self.live = live
         self.workspace: RunWorkspace | None = None
         self.tokens = 0  # model tokens used by this run so far
+        # A run on a decision task prepares the decision (decider role, decision tools).
+        self.decision = task.kind == "decision"
         self.tools = self.make_tools()
 
     def make_tools(self) -> AgentTools:
@@ -326,7 +362,8 @@ class _Loop:
         return AgentTools(
             r.memory, r.service, agent_id=run.agent.id,
             project_id=getattr(r, "project_id", None),  # set per project in main.py
-            toolset=lambda ctx: worker_tools(ctx, run_id=run.id, task_id=task.id),
+            toolset=lambda ctx: (decision_tools if self.decision else worker_tools)(
+                ctx, run_id=run.id, task_id=task.id),
             runs=RunManager(r.service), scratchpads=r.scratchpads, runlog=r.runlog,
             issues=r.issues, artifacts=r.artifacts, workspace=self.workspace,
         )
@@ -334,6 +371,8 @@ class _Loop:
     def open_workspace(self) -> bool:
         """A fresh worktree when the project has a repository. False: the run failed."""
         get = getattr(self.r, "workspace", None)
+        if self.decision:
+            get = None  # preparing a decision reads; it does not change the code
         try:
             config = get() if get is not None else None
         except Exception as e:  # noqa: BLE001
@@ -347,7 +386,8 @@ class _Loop:
                         if p.id != self.run_.id]
             self.workspace = ws.start_run(self.run_.id, self.task.id, previous)
         except (WorkspaceError, OSError) as e:
-            self.end("failed", f"could not prepare the repository checkout: {truncate(str(e), 500)}")
+            self.end("failed", f"could not prepare the repository checkout: {truncate(str(e), 500)}",
+                     "infra")
             return False
         rw = self.workspace
         self.log("status", {"state": "workspace", "note": f"{config.remote} @ "
@@ -364,10 +404,12 @@ class _Loop:
             return True
         return not self.r.service.run(self.run_.id).active  # stopped by another process
 
-    def end(self, status: RunStatus, note: str) -> None:
-        self.log("status", {"state": status, "note": note})
+    def end(self, status: RunStatus, note: str, failure_kind: str | None = None) -> None:
+        """End the run; a failure says why (models.FailureKind): the engine
+        retries "api" and "infra" failures, not the agent's own."""
+        self.log("status", {"state": status, "note": note, "failureKind": failure_kind})
         if self.r.service.run(self.run_.id).active:
-            self.on_exit(status, None, note)
+            self.on_exit(status, None, note, failure_kind=failure_kind)
 
     def run(self) -> None:
         r = self.r
@@ -379,10 +421,11 @@ class _Loop:
         client = r.client_factory()
         deadline = time.monotonic() + r.max_seconds
         base = {"model": r.model, "tools": tools,
-                "system_instruction": worker_instructions(code=self.workspace is not None),
+                "system_instruction": decision_instructions() if self.decision
+                else worker_instructions(code=self.workspace is not None),
                 "generation_config": {"thinking_summaries": "auto"}}
         input_: Any = build_brief(r.service, r.scratchpads, r.runlog, r.memory, self.run_, self.task,
-                                  project_id=getattr(r, "project_id", None))
+                                  project_id=getattr(r, "project_id", None), artifacts=r.artifacts)
         if self.workspace is not None:
             input_ = input_.replace("\n\nDo the task now.", f"\n\n{repo_brief(self.workspace)}\n\nDo the task now.")
         brief_fn = getattr(r, "project_brief", None)  # set per project in main.py
@@ -401,9 +444,11 @@ class _Loop:
                 self.log("status", {"state": "stopped", "note": "stopped between steps"})
                 return
             if steps >= r.max_steps:
-                return self.end("failed", f"budget: used all {r.max_steps} model steps without finishing")
+                return self.end("failed", f"budget: used all {r.max_steps} model steps without finishing",
+                                "budget")
             if time.monotonic() > deadline:
-                return self.end("failed", f"budget: ran longer than {r.max_seconds} s without finishing")
+                return self.end("failed", f"budget: ran longer than {r.max_seconds} s without finishing",
+                                "budget")
             steps += 1
             kwargs = {**base, "input": input_}
             if previous:
@@ -430,11 +475,11 @@ class _Loop:
             calls = self.record(interaction)
             status = getattr(interaction, "status", None)
             if status in ("failed", "cancelled"):
-                return self.end("failed", f"model interaction {status}")
+                return self.end("failed", f"model interaction {status}", "api")
             if not calls:
                 nudges += 1
                 if nudges > MAX_NUDGES:
-                    return self.end("failed", "the agent stopped without calling finish_run")
+                    return self.end("failed", "the agent stopped without calling finish_run", "agent")
                 input_ = NUDGE
                 continue
             results, finished = [], False
@@ -452,9 +497,12 @@ class _Loop:
                 is_error = isinstance(out, dict) and set(out) == {"error"}
                 self.log("tool_result", {"name": name, "callId": call_id, "isError": is_error,
                                          "result": truncate(result_as_text(out), LOG_LIMIT)})
+                # Never send an empty text part: the API rejects it ("Missing text
+                # in content of type text"), e.g. for a tool that returned "".
+                text_out = result_as_text(out, RESULT_LIMIT) or "(empty result)"
                 results.append({"type": "function_result", "call_id": call_id, "name": name,
-                                "result": result_as_text(out, RESULT_LIMIT)})
-                if name == "finish_run" and not is_error:
+                                "result": text_out})
+                if name in FINISHING_TOOLS and not is_error:
                     finished = True
             if finished:
                 run = r.service.run(self.run_.id)
@@ -505,7 +553,7 @@ class _Loop:
         if mine:
             names = ", ".join(a.get("filename") or a.get("title") or "?" for a in mine)
             note += f". API error after saving artifacts ({names}); restart to finish"
-        self.end("failed", note)
+        self.end("failed", note, "api")
 
     def saved_artifacts(self) -> list[dict[str, Any]]:
         """Artifacts on this task (store), or those this run saved (run log) without a store."""
@@ -559,8 +607,10 @@ class _Loop:
                     lines.append(f"### {item.get('name')}\n{truncate(str(item.get('result', '')), 4000)}")
         elif isinstance(pending, str) and pending and pending != self.brief:
             lines += ["", "## Last message to you", truncate(pending, 2000)]
+        finish = ("prepare_decision(question, options, recommended, recommendation, context)"
+                  if self.decision else "finish_run(outcome, summary)")
         lines += ["", "Continue from here with your tools. Save the report with save_artifact if it "
-                  "is not saved yet, then call finish_run(outcome, summary)."]
+                  f"is not saved yet, then call {finish}."]
         return "\n".join(lines)
 
     def count_tokens(self, interaction: Any) -> None:
@@ -753,38 +803,75 @@ def build_brief(
     task: Task,
     *,
     project_id: str | None = None,
+    artifacts: Any = None,
 ) -> str:
-    """The first message of a run: the task and everything needed to continue it."""
+    """The first message of a run: the task and everything needed to continue it.
+
+    Decisions among the task's blockers come first (question, chosen option,
+    rationale, who decided): the work must follow them. On a decision task (a
+    decision-prep run) each blocker is described in full: run results,
+    comments, reports and pushed commits, with links."""
     detail = service.task(task.id)
     lines = [f"# Your task: {task.title}", f"Task id: `{task.id}` · run `{run.id}` · attempt {run.attempt}"]
     if task.parent_id and task.parent_id in service.state.tasks:
         parent = service.state.tasks[task.parent_id]
         lines += [f"Part of: {parent.title} (`{parent.id}`)"]
+    decided = [service.state.tasks[b] for b in task.blocked_by if b in service.state.tasks
+               and service.state.tasks[b].decision is not None
+               and service.state.tasks[b].decision.state == "resolved"]  # type: ignore[union-attr]
+    if decided:
+        lines += ["", "## Decisions this task must follow"]
+        for b in decided:
+            d = b.decision
+            assert d is not None
+            who = ("the agent, automatically (the owner can still change it)" if d.auto
+                   else (d.resolved_by.id if d.resolved_by else "the owner"))
+            lines += [f"### {b.title} (`{b.id}`)", f"Question: {d.question}",
+                      f"**Chosen: {d.chosen}**" + (" (the owner's own answer)" if d.custom else ""),
+                      f"Rationale: {d.rationale or '(none given)'}", f"Decided by {who}."]
+            if d.history:
+                prev = d.history[-1]
+                lines.append(f"This replaces an earlier choice ('{prev.chosen}'): build on "
+                             f"'{d.chosen}' instead.")
+            others = [o for o in d.options if o != d.chosen]
+            if others:
+                lines.append(f"Not chosen: {', '.join(others)}.")
+            if d.context:
+                lines.append(f"Context:\n{truncate(d.context, 2000)}")
     lines += ["", "## Description", task.description.strip() or "(no description)"]
     if run.instructions:
         lines += ["", "## Instructions", run.instructions]
     if task.decision is not None:
         d = task.decision
         lines += ["", "## Decision", f"Question: {d.question}", f"State: {d.state}"]
+        if d.options:
+            lines.append(f"Options: {'; '.join(d.options)}")
+        if d.recommended:
+            lines.append(f"Recommended so far: {d.recommended}. {d.recommendation or ''}")
+        if d.feedback and d.state == "pending":
+            lines.append(f"The owner's input on this decision (address it): {d.feedback}")
         if d.chosen:
             lines += [f"Chosen: {d.chosen}", f"Rationale: {d.rationale or ''}"]
-    upstream = []
-    for bid in task.blocked_by:  # what the tasks this one waited for produced
-        blocker = service.state.tasks.get(bid)
-        if blocker is None:
-            continue
-        part = [f"### {blocker.title} (`{bid}`, {blocker.status})"]
-        if blocker.decision and blocker.decision.state == "resolved":
-            part.append(f"Decided: {blocker.decision.chosen}. {blocker.decision.rationale or ''}")
-        done = [r for r in service.runs(task_id=bid) if r.status == "succeeded"]
-        if done and done[-1].note:
-            part.append(f"Result: {done[-1].note}")
-        notes = scratchpads.get(bid)["content"].strip()
-        if notes:
-            part.append(f"Its scratchpad:\n{truncate(notes, 1500)}")
-        upstream.append("\n".join(part))
+    if task.kind == "decision":
+        upstream = _decision_inputs(service, scratchpads, task, artifacts, project_id)
+    else:
+        upstream = []
+        for bid in task.blocked_by:  # what the tasks this one waited for produced
+            blocker = service.state.tasks.get(bid)
+            if blocker is None or blocker in decided:
+                continue
+            part = [f"### {blocker.title} (`{bid}`, {blocker.status})"]
+            done = [r for r in service.runs(task_id=bid) if r.status == "succeeded"]
+            if done and done[-1].note:
+                part.append(f"Result: {done[-1].note}")
+            notes = scratchpads.get(bid)["content"].strip()
+            if notes:
+                part.append(f"Its scratchpad:\n{truncate(notes, 1500)}")
+            upstream.append("\n".join(part))
     if upstream:
-        lines += ["", "## What the tasks before this one produced", *upstream]
+        title = ("What the tasks this decision waited for produced" if task.kind == "decision"
+                 else "What the tasks before this one produced")
+        lines += ["", f"## {title}", *upstream]
     pad = scratchpads.get(task.id)
     lines += ["", "## Scratchpad (your notes so far)",
               pad["content"].strip() or "(empty: this is the first attempt or nothing was noted)"]
@@ -813,5 +900,51 @@ def build_brief(
             ctx = {"text": ""}
         if ctx.get("text"):
             lines += ["", ctx["text"]]
-    lines += ["", "Do the task now. Finish with finish_run."]
+    if task.kind == "decision":
+        lines += ["", "Prepare the decision now. Finish with prepare_decision."]
+    else:
+        lines += ["", "Do the task now. Finish with finish_run."]
     return "\n".join(lines)
+
+
+def _decision_inputs(service: TaskGraphService, scratchpads: Scratchpads, task: Task,
+                     artifacts: Any, project_id: str | None) -> list[str]:
+    """Each blocker of a decision task, in full: what was asked, the run
+    results, its agents' comments (pushed commits included), its reports and
+    other artifacts with their links."""
+    out = []
+    for bid in task.blocked_by:
+        blocker = service.state.tasks.get(bid)
+        if blocker is None:
+            continue
+        page = f"/p/{project_id or 'default'}/tasks/{bid}"
+        part = [f"### {blocker.title} (`{bid}`, {blocker.status}; task page {page})"]
+        if blocker.description.strip():
+            part.append(f"Asked: {truncate(blocker.description.strip(), 600)}")
+        done = [r for r in service.runs(task_id=bid) if r.status == "succeeded"]
+        if done and done[-1].note:
+            part.append(f"Run result: {truncate(done[-1].note, 1500)}")
+        try:
+            activity = service.task(bid).get("activity", [])
+        except Exception:  # noqa: BLE001 - context only
+            activity = []
+        comments = [a for a in activity if a.get("op") == "comment.add"][-4:]
+        if comments:
+            part.append("Comments:\n" + "\n".join(f"- {truncate(a['text'], 700)}" for a in comments))
+        files: list[str] = []
+        if artifacts is not None:
+            try:
+                files = [f"- {a.get('title') or a.get('filename')} ({a.get('kind')}, artifact id "
+                         f"`{a['id']}`): {a['viewUrl']}" for a in artifacts.list(bid)]
+            except Exception:  # noqa: BLE001
+                files = []
+        stored = {a.path for a in blocker.artifacts}
+        files += [f"- {a.label or a.path}: {a.path}" for a in blocker.artifacts
+                  if not any(a.path in f for f in files)] if stored else []
+        if files:
+            part.append("Reports and links:\n" + "\n".join(files))
+        notes = scratchpads.get(bid)["content"].strip()
+        if notes:
+            part.append(f"Its scratchpad:\n{truncate(notes, 1200)}")
+        out.append("\n".join(part))
+    return out

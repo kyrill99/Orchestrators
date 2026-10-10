@@ -491,15 +491,54 @@ def graph_write_tools(ctx: ToolContext) -> list[ToolDef]:
         )
 
     def resolve_decision(task_id: str, chosen: str, rationale: str) -> dict:
-        """Record a decision you made yourself, with the rationale."""
-        return ctx.submit([ResolveDecision(task_id=task_id, chosen=chosen, rationale=rationale)], rationale)
+        """Record a decision you made yourself, with the rationale. On a decision
+        task that is already resolved this changes the answer: tasks after it
+        that already started are reopened or restarted with the new choice."""
+        task = ctx.tg.task(task_id)
+        before = task.get("decision") or {}
+        out = ctx.submit([ResolveDecision(task_id=task_id, chosen=chosen, rationale=rationale)], rationale)
+        if before.get("state") == "resolved" and ctx.runs is not None:
+            from taskgraph.loop import propagate_decision_change
+
+            propagate_decision_change(ctx.tg, ctx.runs, ctx.actor, task_id, before.get("chosen"))
+        return out
+
+    def prepare_decision(
+        task_id: str,
+        question: str,
+        options: list[str],
+        recommended: str,
+        recommendation: str,
+        context: str,
+        reason: str = "decision prepared",
+    ) -> dict:
+        """Prepare the owner's decision on a decision task: a clear question,
+        2-5 concrete options (short labels), the option you recommend (exactly
+        one of the options), `recommendation`: why, with the trade-offs, in 2-4
+        sentences, and `context`: what the options rest on (findings, links to
+        the reports and code). Replaces a question that is still pending."""
+        return ctx.submit([_prepared(task_id, question, options, recommended, recommendation, context)],
+                          reason)
 
     return [
         tool(apply_changes, schema_override=_APPLY_CHANGES_SCHEMA),
         *(tool(f) for f in (create_task, update_task, update_task_fields, set_status, assign_task,
                             delete_task, add_relation, remove_relation, add_comment,
-                            request_decision, resolve_decision)),
+                            request_decision, resolve_decision, prepare_decision)),
     ]
+
+
+def _prepared(task_id: str, question: str, options: list[str], recommended: str,
+              recommendation: str, context: str) -> RequestDecision:
+    options = [o.strip() for o in options if o and o.strip()]
+    if not 2 <= len(options) <= 5:
+        raise TaskGraphError("invalid", f"give 2 to 5 options (got {len(options)})")
+    if len({o.lower() for o in options}) != len(options):
+        raise TaskGraphError("invalid", "options must differ")
+    if not recommendation.strip():
+        raise TaskGraphError("invalid", "say why you recommend that option (recommendation)")
+    return RequestDecision(task_id=task_id, question=question, options=options, context=context,
+                           recommended=recommended, recommendation=recommendation.strip())
 
 
 # --------------------------------------------------------------------------
@@ -896,7 +935,7 @@ def landing_finish_tool(ctx: ToolContext, run_id: str, task_id: str) -> ToolDef:
             note = f"{summary}\n\nNot pushed: {e}"
             if e.output:
                 note += f"\n{e.output[-1500:]}"
-            run = runs.finish(ctx.actor, run_id, "failed", note)
+            run = runs.finish(ctx.actor, run_id, "failed", note, failure_kind="checks")
             return {"run": run.dump(), "pushed": False, "error": str(e),
                     "note": "the run failed; nothing was pushed"}
         if landed["pushed"]:
@@ -1005,6 +1044,74 @@ def worker_tools(ctx: ToolContext, *, run_id: str, task_id: str) -> list[ToolDef
     if ctx.workspace is not None:  # the project has a repository: code tools, landing on finish
         tools = [x for x in tools if x.name != "finish_run"]
         tools += [*code_tools(ctx), landing_finish_tool(ctx, run_id, task_id)]
+    return tools
+
+
+def decision_tools(ctx: ToolContext, *, run_id: str, task_id: str) -> list[ToolDef]:
+    """A decision-prep run on decision task `task_id` (the engine starts one
+    when the task's blockers are done): read what the blockers produced, save
+    a comparison report, then prepare_decision, which also ends the run."""
+    t = by_name([*memory_tools(ctx), *graph_read_tools(ctx), *graph_write_tools(ctx),
+                 *run_tools(ctx), *scratchpad_tools(ctx), *artifact_tools(ctx)])
+    mine = {"task_id": task_id}
+
+    def prepare_decision(question: str, options: list[str], recommended: str,
+                         recommendation: str, context: str) -> dict:
+        """Put the prepared decision on your task and end your run (the last
+        call). question: what the owner decides, in one sentence. options: 2-5
+        concrete choices, each a short label (a few words). recommended: the
+        option you recommend, exactly as written in options. recommendation: why,
+        with the trade-offs, in 2-4 sentences. context: what the options rest
+        on, in short markdown: one line per option with its evidence, and links
+        to the reports and code. Save the comparison report (save_artifact)
+        first."""
+        if ctx.artifacts is not None:
+            mine_saved = [a for a in ctx.need("artifacts").list(task_id) if a.get("runId") == run_id]
+            if not mine_saved:
+                raise TaskGraphError("invalid", "save the comparison report first "
+                                                "(save_artifact, filename 'decision.html')")
+        op = _prepared(task_id, question, options, recommended, recommendation, context)
+        ctx.submit([op], f"{run_id}: decision prepared")
+        d = ctx.tg.task(task_id)["decision"] or {}
+        run = ctx.need("runs").finish(
+            ctx.actor, run_id, "succeeded",
+            f"Prepared: {d.get('question')} Options: {', '.join(d.get('options') or [])}. "
+            f"Recommends {d.get('recommended')}.")
+        return {"run": run.dump(), "decision": d,
+                "note": "the decision waits for the owner (or the agent, while the engine runs)"}
+
+    def finish_run(summary: str) -> dict:
+        """End your run as failed when you cannot prepare the decision (say why
+        in summary). When you can, call prepare_decision instead: it ends the run."""
+        return ctx.need("runs").finish(ctx.actor, run_id, "failed", summary)
+
+    tools = [
+        bind(t["get_task"], defaults=mine,
+             description="One task (default: yours, the decision) with its activity feed "
+                         "(comments, run results), dependents, children and active run."),
+        t["get_graph"],
+        bind(t["add_comment"], defaults=mine,
+             description="Post a note to a task's activity feed (default: your decision task)."),
+        bind(t["read_scratchpad"], defaults=mine,
+             description="Read a task's scratchpad (default: yours), e.g. a blocker's working notes."),
+        bind(t["write_scratchpad"], fixed=mine,
+             description="Replace your task's scratchpad with `content` (markdown)."),
+        bind(t["save_artifact"], fixed={**mine, "run_id": run_id},
+             description="Save a file on your decision task (max 2 MB). kind 'html' (default) for the "
+                         "comparison report: one self-contained page. Saving the same filename again "
+                         "replaces it."),
+        bind(t["list_artifacts"], defaults=mine,
+             description="Files saved on a task: use it on each blocker to find its report."),
+        t["read_artifact"],
+        t["get_context"],
+        t["recall"],
+        tool(prepare_decision),
+        tool(finish_run),
+    ]
+    if ctx.memory is None:
+        tools = [x for x in tools if x.name not in ("get_context", "recall")]
+    if ctx.artifacts is None:
+        tools = [x for x in tools if x.name not in ("save_artifact", "list_artifacts", "read_artifact")]
     return tools
 
 

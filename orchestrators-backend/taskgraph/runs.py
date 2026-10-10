@@ -44,8 +44,9 @@ from agent_identity import system_prompt
 from .models import Actor, AgentRun, RunStatus, Task
 from .service import TaskGraphError, TaskGraphService
 
-# (status, exit_code, note) reported by a runner when a run ends on its own.
-OnExit = Callable[[RunStatus, "int | None", "str | None"], None]
+# (status, exit_code, note[, failure_kind]) reported by a runner when a run
+# ends on its own; failure_kind is a models.FailureKind (keyword, optional).
+OnExit = Callable[..., None]
 
 
 class Runner(Protocol):
@@ -249,13 +250,16 @@ class RunManager:
         )
         task = self.service.state.tasks[task_id].model_copy(deep=True)
 
-        def on_exit(status: RunStatus, code: int | None, note: str | None) -> None:
-            self.service.end_run(run.agent, run.id, status, exit_code=code, note=note)
+        def on_exit(status: RunStatus, code: int | None, note: str | None,
+                    failure_kind: str | None = None) -> None:
+            self.service.end_run(run.agent, run.id, status, exit_code=code, note=note,
+                                 failure_kind=failure_kind)
 
         try:
             meta = self.runner.start(run, task, on_exit)
         except Exception as e:  # launching failed: record it, then report
-            self.service.end_run(actor, run.id, "failed", note=f"could not start: {e}")
+            self.service.end_run(actor, run.id, "failed", note=f"could not start: {e}",
+                                 failure_kind="infra")
             raise TaskGraphError("runner", f"could not start {run.id}: {e}") from None
         if meta:
             run = self.service.update_run(run.id, **meta)
@@ -293,15 +297,20 @@ class RunManager:
         )
 
     def finish(
-        self, actor: Actor, run_id: str, status: RunStatus, note: str | None = None
+        self, actor: Actor, run_id: str, status: RunStatus, note: str | None = None,
+        *, failure_kind: str | None = None,
     ) -> AgentRun:
-        """An agent reports how its run ended (succeeded / failed)."""
+        """An agent reports how its run ended (succeeded / failed). A failure
+        an agent reports is its own ("agent") unless `failure_kind` says otherwise."""
         if status not in ("succeeded", "failed"):
             raise TaskGraphError("invalid", "finish a run as 'succeeded' or 'failed'")
         run = self.service.run(run_id)
         if not run.active:
             raise TaskGraphError("conflict", f"run '{run_id}' already ended ({run.status})")
-        return self.service.end_run(actor, run_id, status, note=note, reason=note)
+        if status == "failed" and failure_kind is None and actor.type == "agent":
+            failure_kind = "agent"
+        return self.service.end_run(actor, run_id, status, note=note, reason=note,
+                                    failure_kind=failure_kind)
 
     # ---- queries ---------------------------------------------------------
 

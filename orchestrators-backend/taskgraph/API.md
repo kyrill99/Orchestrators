@@ -11,7 +11,11 @@ log are views over the same events. GUI and MCP processes can share the log safe
 - **Task**: `id, title, kind (start|task|decision|end), status (open|running|in-review|closed),
   description, parentId, blockedBy[], relatedTo[], assignee {type: human|agent, id},
   startDate, endDate, progress (0–1), artifacts[], decision`
-- **Decision** (on a task): `question, options[], context, state (pending|resolved), chosen, rationale, resolvedBy, resolvedAt`
+- **Decision** (on a task): `question, options[], context, recommended, recommendation,
+  requestedBy, requestedAt, feedback, feedbackBy, feedbackAt, state (pending|resolved),
+  chosen, rationale, resolvedBy, resolvedAt, auto, custom, history[]` (`recommended` is one
+  of the options, `recommendation` the reasons; `auto`: the agent decided while the engine
+  ran; `custom`: an answer that is none of the options; `history`: earlier answers)
 - **Edge**: derived from `blockedBy` — `{id, source, target, type: "blocks"}`
 - **Changeset**: a batch of ops by one actor with a `reason`; `status: applied|proposed|rejected`
 
@@ -19,11 +23,13 @@ log are views over the same events. GUI and MCP processes can share the log safe
 
 `task.create`, `task.update`, `task.set_status`, `task.assign`, `task.delete`,
 `relation.add`, `relation.remove` (`type: blocks|related`), `comment.add`,
-`decision.request`, `decision.resolve`.
+`decision.request`, `decision.resolve`, `decision.feedback`.
 
 A batch is validated as a whole: if any op fails, nothing is written. Rules:
 no `blocks` cycles, no self-links, a task can only be running/in-review/closed when
-all its blockers are closed, a pending decision closes via `decision.resolve`.
+all its blockers are closed (for a decision task: closed or in review), a pending
+decision closes via `decision.resolve`. On a decision task, `decision.request` may
+replace a pending question and `decision.resolve` may change a resolved answer.
 Agents must give a `reason`.
 
 ## Autonomy switch (project setting, humans only)
@@ -175,15 +181,35 @@ While running, the engine starts runs (agent `ENGINE_AGENT_ID`, default `gemini`
 ready work tasks until `ENGINE_MAX_RUNS` (2) are active, checking every
 `ENGINE_INTERVAL` (2 s). Queued: kind `task`, ready (open, blockers closed, no pending
 decision), not assigned to a person, no active run, and either never run or last run `lost` (fewer than
-`ENGINE_MAX_ATTEMPTS`, 3, in a row). Failed or stopped tasks wait for a human or the
+`ENGINE_MAX_ATTEMPTS`, 3, in a row), or last run failed on the infrastructure
+(`failureKind` `api` or `infra`, retried at most `ENGINE_MAX_RETRIES`, 2, times in a row,
+`ENGINE_RETRY_BACKOFF`, 60 s, after the failure). Runs record `failureKind`
+(`api|infra|budget|agent|checks`). Other failed or stopped tasks wait for a human or the
 planner to restart them, so a failing task cannot loop; succeeded tasks are in review.
+
+Decision tasks: actionable once every blocker is closed or in review (the blockers are
+not approved). An actionable decision task without a prepared decision gets a
+decision-prep run (Gemini, decider role, `agent_identity/decider.md`): it reads the
+blockers' results and reports, saves a comparison report on the task and calls
+`prepare_decision` (question, 2-5 options, `recommended`, `recommendation`, context),
+which ends the run; the task stays open and unassigned. While the engine runs and
+autonomy is not `ask-all`, a prepared decision still pending
+`DECISION_AUTO_AFTER_SECONDS` (default 0) after it was prepared is resolved by agent
+`agent` with the recommendation (`auto: true`; under `ask-structural` as a proposal).
+Not auto-decided: decisions the owner sent input back on, decision tasks assigned to a
+person, and worker questions on work tasks. Resolving closes the decision task, so the
+tasks after it start; their briefs lead with the question, the chosen option and the
+rationale.
 The state (`engine_state` table) survives restarts; default stopped. The engine refuses
 to start with the `record` runner.
 
 `status()["waiting"]` explains an idle engine: `{reason, summary, focus, review[],
-decisions[], proposals[], blocked[], assignedToPeople[], needsRestart[], autonomy,
+decisions[] {id, title, question, recommended, auto, autoInSeconds, feedback},
+preparingDecisions[], decisionsToPrepare[], decisionChanges[], proposals[], blocked[],
+assignedToPeople[], needsRestart[] {.., lastRun, failureKind, why}, retrying[], autonomy,
 atRunLimit}`. `reason` is the main cause (`ask-all`, `run-limit`, `review`, `decision`,
-`proposal`, `assigned-to-person`, `needs-restart`, `blocked`, or null), `summary` one line for people ("Waiting for your
+`decision-auto`, `preparing-decision`, `proposal`, `assigned-to-person`, `retrying`,
+`needs-restart`, `decision-changed`, `blocked`, or null), `summary` one line for people ("Waiting for your
 review: ..."), `focus` `{id, title, kind}` the task to open first. `blocked` lists open
 tasks with `blockedBy: [{id, title, status}]`; `needsRestart` ready tasks the engine
 will not retry (last run failed, stopped, or lost `ENGINE_MAX_ATTEMPTS` times).
@@ -202,4 +228,9 @@ limit; it also closes ready start/end milestones), whether or not the engine is
 running. A worker that needs the owner puts a decision on its task and finishes as
 failed; answering it with `/decide` reopens the task and queues it again, and the next
 attempt's brief has the answer. Sending a result back restarts the task with the note as
-instructions.
+instructions. `/decide` takes `{actor, chosen, rationale?}`; `chosen` may be the owner's
+own answer. On an already resolved decision it changes the answer: each task directly
+after it that started is restarted (active run) or reopened (in review / closed) with a
+comment, so it is redone with the new choice. `POST /tasks/{id}/decision/feedback`
+`{actor, note}` sends input back on a prepared decision: the decision is prepared again
+with it, and auto-decide leaves it to the owner from then on.

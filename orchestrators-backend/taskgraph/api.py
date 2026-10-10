@@ -13,7 +13,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from identity import current_user
 
 from .models import Actor, Autonomy, Model, Op
-from .loop import auto_start, decide, review_task
+from .loop import auto_start, decide, decision_feedback, review_task
 from .runlog import RunLog, Scratchpads
 from .runs import RunManager, runner_from_env
 from .service import TaskGraphError, TaskGraphService
@@ -58,7 +58,12 @@ class TaskReviewBody(Model):
 class DecideBody(Model):
     actor: Actor
     chosen: str
-    rationale: str
+    rationale: str | None = None
+
+
+class DecisionFeedbackBody(Model):
+    actor: Actor
+    note: str
 
 
 class ScratchpadBody(Model):
@@ -169,9 +174,17 @@ def build_router(
 
     @r.post("/tasks/{task_id}/decide")
     def decide_task(task_id: str, body: DecideBody):
-        """Owner answers the task's pending decision; tasks it unblocks start."""
+        """Owner answers the task's decision (one of the options or their own
+        answer); tasks it unblocks start. On a decision that is already resolved
+        this changes it: tasks after it that started are redone (loop.py)."""
         return call(decide, service, manager, body.actor, task_id, body.chosen, body.rationale,
                     engine)
+
+    @r.post("/tasks/{task_id}/decision/feedback")
+    def decision_input(task_id: str, body: DecisionFeedbackBody):
+        """Owner sends input back on a prepared decision without deciding: it is
+        prepared again with the input, and the agent no longer decides it."""
+        return call(decision_feedback, service, manager, body.actor, task_id, body.note, engine)
 
     @r.post("/autostart")
     def autostart(body: StopBody):

@@ -15,11 +15,13 @@ from .models import (
     AgentRun,
     Changeset,
     DecisionInfo,
+    DecisionRecord,
     Edge,
     Event,
     Op,
     ProjectSettings,
     Task,
+    blocker_done,
 )
 
 OP_ADAPTER: TypeAdapter[Op] = TypeAdapter(Op)
@@ -140,6 +142,7 @@ def apply_event(state: GraphState, ev: Event) -> None:
         run.status = p["status"]
         run.exit_code = p.get("exitCode")
         run.note = p.get("note")
+        run.failure_kind = p.get("failureKind")
         run.ended_at = ev.ts
         run.ended_by = ev.actor
     else:
@@ -192,17 +195,39 @@ def _apply_op(state: GraphState, op: Op, ev: Event) -> None:
     elif op.op == "comment.add":
         pass  # lives only in the event log / activity feed
     elif op.op == "decision.request":
+        old = task.decision
         task.decision = DecisionInfo(
-            question=op.question, options=op.options, context=op.context
+            question=op.question, options=op.options, context=op.context,
+            recommended=op.recommended, recommendation=op.recommendation,
+            requested_by=ev.actor, requested_at=ev.ts,
         )
-    elif op.op == "decision.resolve":
+        if old is not None and old.state == "pending":
+            # Prepared again: keep the owner's input (it pauses auto-decide).
+            task.decision.feedback = old.feedback
+            task.decision.feedback_by = old.feedback_by
+            task.decision.feedback_at = old.feedback_at
+            task.decision.history = old.history
+    elif op.op == "decision.feedback":
         assert task.decision is not None
-        task.decision.state = "resolved"
-        task.decision.chosen = op.chosen
-        task.decision.rationale = op.rationale
-        task.decision.resolved_by = ev.actor
-        task.decision.resolved_at = ev.ts
-        if all(tasks[b].status == "closed" for b in task.blocked_by if b in tasks):
+        task.decision.feedback = op.note
+        task.decision.feedback_by = ev.actor
+        task.decision.feedback_at = ev.ts
+    elif op.op == "decision.resolve":
+        if task.decision is None:  # a decision task answered before it was prepared
+            task.decision = DecisionInfo(question=task.description.strip() or task.title)
+        d = task.decision
+        if d.state == "resolved" and d.chosen:  # changed later: keep the earlier answer
+            d.history.append(DecisionRecord(chosen=d.chosen, rationale=d.rationale,
+                                            resolved_by=d.resolved_by, resolved_at=d.resolved_at,
+                                            auto=d.auto))
+        d.state = "resolved"
+        d.chosen = op.chosen
+        d.rationale = op.rationale
+        d.resolved_by = ev.actor
+        d.resolved_at = ev.ts
+        d.auto = op.auto
+        d.custom = bool(d.options) and op.chosen not in d.options
+        if all(blocker_done(task, tasks[b]) for b in task.blocked_by if b in tasks):
             task.status = "closed"
             task.progress = 1.0
     task.updated_at = ev.ts

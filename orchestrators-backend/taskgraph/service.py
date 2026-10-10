@@ -41,6 +41,7 @@ from .models import (
     SetStatus,
     SubmitResult,
     Task,
+    blocker_done,
 )
 from .store import EventStore, MemoryEventStore
 
@@ -195,8 +196,20 @@ class TaskGraphService:
             out.append(t.dump())
         return out
 
+    def actionable_decisions(self) -> list[dict[str, Any]]:
+        """Open decision tasks whose blockers are all closed or in review
+        (models.blocker_done): their decision can be prepared and made."""
+        self._sync()
+        s = self.state
+        return [
+            t.dump() for t in s.tasks.values()
+            if t.kind == "decision" and t.status in ("open", "running")
+            and all(blocker_done(t, s.tasks[b]) for b in t.blocked_by if b in s.tasks)
+        ]
+
     def blocked(self) -> list[dict[str, Any]]:
-        """Unfinished tasks with at least one blocker that is not closed."""
+        """Unfinished tasks with at least one blocker that is not done (closed;
+        for decision tasks, closed or in review)."""
         self._sync()
         out = []
         for t in self.state.tasks.values():
@@ -205,7 +218,7 @@ class TaskGraphService:
             waiting = [
                 {"id": b, "status": self.state.tasks[b].status}
                 for b in t.blocked_by
-                if self.state.tasks[b].status != "closed"
+                if not blocker_done(t, self.state.tasks[b])
             ]
             if waiting:
                 out.append({"id": t.id, "title": t.title, "waitingOn": waiting})
@@ -427,7 +440,8 @@ class TaskGraphService:
                 raise TaskGraphError(
                     "invalid", f"'{task_id}' is closed; reopen it (set_status open) first"
                 )
-            if task.decision and task.decision.state == "pending":
+            # A decision task's run prepares (or prepares again) its decision.
+            if task.decision and task.decision.state == "pending" and task.kind != "decision":
                 raise TaskGraphError("invalid", f"'{task_id}' is waiting on a pending decision")
             self._require_unblocked(s, task, "running")
             current = s.active_run(task_id)
@@ -462,8 +476,9 @@ class TaskGraphService:
             if task.status != "running":
                 follow.append(SetStatus(task_id=task_id, status="running"))
             # A task already assigned to an agent (e.g. the GUI's "Agent") keeps
-            # it; the run records which worker did the work.
-            if task.assignee is None or task.assignee.type != "agent":
+            # it; the run records which worker did the work. Decision tasks stay
+            # unassigned: the owner answers them, the run only prepares them.
+            if task.kind != "decision" and (task.assignee is None or task.assignee.type != "agent"):
                 follow.append(AssignTask(task_id=task_id, assignee=agent))
             events.extend(self._apply_ops(draft, actor, follow, None, reason))
             self._commit(draft, events)
@@ -492,11 +507,15 @@ class TaskGraphService:
         exit_code: int | None = None,
         note: str | None = None,
         reason: str | None = None,
+        failure_kind: str | None = None,
     ) -> AgentRun:
         """Record that a run ended. Ending a run that already ended is a no-op.
 
         If the task is still 'running' it moves on: to 'in-review' when the run
-        succeeded, back to 'open' otherwise (stopped / failed / lost).
+        succeeded, back to 'open' otherwise (stopped / failed / lost). A
+        decision task always goes back to 'open': its run prepared the
+        decision, which now waits to be answered. `failure_kind`
+        (models.FailureKind) says why a failed run failed.
         """
         if status == "running":
             raise TaskGraphError("invalid", "end_run needs a final status")
@@ -507,10 +526,14 @@ class TaskGraphService:
                 return run.model_copy(deep=True)
             draft = self.state.copy()
             detail = f" (exit {exit_code})" if exit_code is not None else ""
+            payload: dict[str, Any] = {"runId": run_id, "status": status, "exitCode": exit_code,
+                                       "note": note}
+            if status == "failed" and failure_kind:
+                payload["failureKind"] = failure_kind
+                detail += f" [{failure_kind}]"
             events = [
                 self._event(
-                    draft, actor, "run.ended",
-                    {"runId": run_id, "status": status, "exitCode": exit_code, "note": note},
+                    draft, actor, "run.ended", payload,
                     task_ids=[run.task_id] if run.task_id in draft.tasks else [],
                     reason=reason or note,
                     summary=f"{run.agent.label()} {status}{detail} ({run_id})",
@@ -518,7 +541,7 @@ class TaskGraphService:
             ]
             task = draft.tasks.get(run.task_id)
             if task is not None and task.status == "running":
-                nxt = "in-review" if status == "succeeded" else "open"
+                nxt = "in-review" if status == "succeeded" and task.kind != "decision" else "open"
                 events.extend(
                     self._apply_ops(
                         draft, actor, [SetStatus(task_id=task.id, status=nxt)], None,
@@ -602,7 +625,7 @@ class TaskGraphService:
     def _require_unblocked(self, state: GraphState, task: Task, status: str) -> None:
         if status not in WORK_STATUSES:
             return
-        open_blockers = [b for b in task.blocked_by if state.tasks[b].status != "closed"]
+        open_blockers = [b for b in task.blocked_by if not blocker_done(task, state.tasks[b])]
         if open_blockers:
             raise TaskGraphError(
                 "blocked",
@@ -686,13 +709,30 @@ class TaskGraphService:
             return op
 
         if op.op == "decision.request":
-            if task.decision and task.decision.state == "pending":
+            # A decision task's question can be prepared again (owner input).
+            if task.decision and task.decision.state == "pending" and task.kind != "decision":
                 raise TaskGraphError("conflict", f"'{task.id}' already has a pending decision")
-            return op
+            options = [o.strip() for o in op.options if o.strip()]
+            if op.recommended is not None:
+                match = [o for o in options if o.lower() == op.recommended.strip().lower()]
+                if not match:
+                    raise TaskGraphError(
+                        "invalid",
+                        f"recommended '{op.recommended}' is not one of the options {options}")
+                op = op.model_copy(update={"recommended": match[0]})
+            return op.model_copy(update={"options": options})
 
         if op.op == "decision.resolve":
-            if not task.decision or task.decision.state != "pending":
+            d = task.decision
+            # A decision task can be answered before it was prepared, and its
+            # answer changed later (override).
+            if task.kind != "decision" and (not d or d.state != "pending"):
                 raise TaskGraphError("invalid", f"'{task.id}' has no pending decision")
+            return op
+
+        if op.op == "decision.feedback":
+            if not task.decision or task.decision.state != "pending":
+                raise TaskGraphError("invalid", f"'{task.id}' has no pending decision to give input on")
             return op
 
         if op.op == "task.delete":
@@ -751,5 +791,11 @@ def _summarize(s: GraphState, actor: Actor, op: Op) -> str:
     if op.op == "decision.request":
         return f"{who} asked: {op.question}"
     if op.op == "decision.resolve":
-        return f"{who} decided '{op.chosen}' — {op.rationale}"
+        d = s.tasks[op.task_id].decision if op.task_id in s.tasks else None
+        if d is not None and d.state == "resolved" and d.chosen:
+            return f"{who} changed the decision from '{d.chosen}' to '{op.chosen}' — {op.rationale}"
+        how = " automatically" if op.auto else ""
+        return f"{who} decided{how} '{op.chosen}' — {op.rationale}"
+    if op.op == "decision.feedback":
+        return f"{who} sent input back to the decision: {op.note}"
     return f"{who} {op.op}"

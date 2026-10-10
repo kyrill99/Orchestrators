@@ -42,6 +42,12 @@ Depending on the project's autonomy setting your change applies immediately
 (status 'applied') or waits for human review (status 'proposed').
 Ask the human about strategy (goals, priorities, success criteria) with
 request_decision, never about implementation A-vs-B choices you can decide.
+Decision tasks (kind 'decision') are prepared by an agent once their blockers
+are closed or in review: question, options, a recommendation and a comparison
+report (prepare_decision does the same by hand). While the engine runs and
+autonomy is not ask-all, the agent then takes the recommendation; the owner can
+change it. resolve_decision answers one (or changes an answer: tasks after it
+that already started are redone); list_decisions is the decision log.
 
 Run control: start_task puts an agent to work on a ready task (it moves to
 'running'), stop_task / restart_task stop or redo that work, start_ready_tasks

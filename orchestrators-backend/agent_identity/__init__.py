@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-Role = Literal["strategy_partner", "planner", "worker"]
+Role = Literal["strategy_partner", "planner", "worker", "decider"]
 
 _DIR = Path(__file__).resolve().parent
 

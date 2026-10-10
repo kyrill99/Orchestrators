@@ -109,7 +109,7 @@ class Base(unittest.TestCase):
             CreateTask(id="u", title="Second task"),
             CreateTask(id="v", title="Third task"),
             CreateTask(id="later", title="Blocked", blocked_by=["t"]),
-            CreateTask(id="d", title="Pick", kind="decision"),
+            CreateTask(id="d", title="Pick", kind="decision", blocked_by=["later"]),
         ])
         self.runlog = RunLog(self.db)
         self.pads = Scratchpads(self.db)
@@ -598,7 +598,8 @@ class EngineWaitingTest(unittest.TestCase):
         w = self.engine.status()["waiting"]
         self.assertEqual(w["reason"], "decision")
         self.assertEqual(w["decisions"], [{"id": "pitch", "title": "Structure narrative arc and timing",
-                                           "question": "Investors or customers?"}])
+                                           "question": "Investors or customers?", "recommended": None,
+                                           "auto": False, "autoInSeconds": None, "feedback": False}])
         self.assertEqual(w["focus"]["kind"], "decision")
         self.assertIn("Waiting for your decision", w["summary"])
 
@@ -648,7 +649,8 @@ class EngineWaitingTest(unittest.TestCase):
         self.finish("extra")
         w = self.engine.status()["waiting"]
         self.assertEqual(w["needsRestart"], [{"id": "pitch", "title": "Structure narrative arc and timing",
-                                              "lastRun": "failed"}])
+                                              "lastRun": "failed", "failureKind": "agent",
+                                              "why": "last run failed: the agent could not finish"}])
         self.assertEqual(w["reason"], "review")  # extra is in review
         self.assertIn("Not restarted automatically", w["summary"])
 

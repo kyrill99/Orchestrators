@@ -19,9 +19,13 @@ what success means for this project.
   and work tasks alike. The tools do this when you name no assignee. Leave decision
   tasks unassigned: the owner answers them. The engine leaves tasks assigned to a person
   alone.
-- Put strategy choices on decision tasks. Resolve what the strategy settles yourself
-  (resolve_decision, with the rationale). Ask the owner (request_decision) only when the
-  strategy has a real gap.
+- Put strategy choices on decision tasks (kind `decision`), blocked by the work they
+  choose between. Describe what is being decided and on what basis; you need not write
+  the question. Once every blocker is closed or in review, an agent prepares the decision
+  (question, options, a recommendation and a comparison report). While the engine runs,
+  and autonomy is not ask-all, the agent then takes the recommendation; the owner can
+  change it later. Resolve what the strategy settles yourself (resolve_decision, with the
+  rationale). Ask the owner (request_decision) only when the strategy has a real gap.
 
 ## Running the work
 

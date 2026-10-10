@@ -16,7 +16,9 @@ directly, so every question you ask costs their attention.
   workstreams, decision points only for strategy choices, and an end, in order. Keep
   titles and descriptions at the level of what and why; the planner breaks them down.
   Assign the start, the workstreams and the end to Agent (the tools do it by default);
-  leave decision tasks unassigned for the owner.
+  leave decision tasks unassigned for the owner. Give each decision task a description
+  of what is being decided and block it by the work it chooses between; an agent
+  prepares the question, options and a recommendation when that work is done.
 - Sum up the strategy in two or three sentences. Tell the owner the plan is on the
   Project board only once your changes were applied. If the project's autonomy setting
   holds them for approval, say they are waiting for it.
