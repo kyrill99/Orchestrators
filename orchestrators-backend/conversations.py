@@ -70,12 +70,35 @@ CREATE TABLE IF NOT EXISTS messages (
     created_at      REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS messages_conversation ON messages(conversation_id, id);
+CREATE TABLE IF NOT EXISTS message_reactions (
+    message_id  INTEGER NOT NULL,
+    email       TEXT NOT NULL,
+    name        TEXT NOT NULL DEFAULT '',
+    value       INTEGER NOT NULL,
+    created_at  REAL NOT NULL,
+    delivered   INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (message_id, email)
+);
 """
+REACTION_PREVIEW_LEN = 80
+
 
 
 class Participant(BaseModel):
     email: str
     name: str
+
+
+class Voter(BaseModel):
+    email: str
+    name: str
+    value: int
+
+
+class Reactions(BaseModel):
+    up: int = 0
+    down: int = 0
+    voters: list[Voter] = Field(default_factory=list)
 
 
 class Message(BaseModel):
@@ -87,6 +110,7 @@ class Message(BaseModel):
     content: str
     mode: Mode = "text"
     created_at: float
+    reactions: Reactions = Field(default_factory=Reactions)
 
 
 class Summary(BaseModel):
@@ -121,6 +145,10 @@ class PostBody(BaseModel):
     hidden: bool = False
 
 
+class ReactBody(BaseModel):
+    value: Literal[1, -1, 0]
+
+
 class PostResult(BaseModel):
     message: Message | None
     reply: Message
@@ -129,6 +157,29 @@ class PostResult(BaseModel):
 def _title(text: str) -> str:
     line = " ".join(text.split())
     return line if len(line) <= TITLE_LEN else line[: TITLE_LEN - 1].rstrip() + "…"
+
+
+def _preview(text: str) -> str:
+    line = " ".join(text.split())
+    if len(line) <= REACTION_PREVIEW_LEN:
+        return line
+    return line[: REACTION_PREVIEW_LEN - 1].rstrip() + "\u2026"
+
+
+def reactions_text(rows) -> str:
+    """Rows carry name, email, value, role, author_name, content. Empty -> ""."""
+    parts = []
+    for r in rows:
+        who = r["name"] or r["email"]
+        verb = "upvoted" if r["value"] > 0 else "downvoted"
+        if r["role"] == "agent":
+            whose = "your message"
+        else:
+            whose = f"{r['author_name'] or 'someone'}'s message"
+        parts.append(f'{who} {verb} {whose}: "{_preview(r["content"])}"')
+    if not parts:
+        return ""
+    return "[Reactions since your last reply: " + "; ".join(parts) + "]\n\n"
 
 
 def _message(row) -> Message:
@@ -142,6 +193,14 @@ def _message(row) -> Message:
         mode=row["mode"],
         created_at=row["created_at"],
     )
+
+
+def _add_vote(reactions: Reactions, v) -> None:
+    if v["value"] > 0:
+        reactions.up += 1
+    elif v["value"] < 0:
+        reactions.down += 1
+    reactions.voters.append(Voter(email=v["email"], name=v["name"] or v["email"], value=v["value"]))
 
 
 class ConversationStore:
@@ -228,7 +287,80 @@ class ConversationStore:
                 "SELECT * FROM messages WHERE conversation_id = ? AND hidden = 0 ORDER BY id",
                 (cid,),
             ).fetchall()
-        return [_message(r) for r in rows]
+            votes = conn.execute(
+                "SELECT r.message_id, r.email, r.name, r.value FROM message_reactions r"
+                " JOIN messages m ON m.id = r.message_id WHERE m.conversation_id = ?"
+                " ORDER BY r.created_at",
+                (cid,),
+            ).fetchall()
+        by_msg: dict[int, Reactions] = {}
+        for v in votes:
+            _add_vote(by_msg.setdefault(v["message_id"], Reactions()), v)
+        out = []
+        for r in rows:
+            m = _message(r)
+            if m.id in by_msg:
+                m.reactions = by_msg[m.id]
+            out.append(m)
+        return out
+
+    def message(self, cid: str, mid: int) -> Message | None:
+        with self.db.read() as conn:
+            row = conn.execute(
+                "SELECT * FROM messages WHERE id = ? AND conversation_id = ?", (mid, cid)
+            ).fetchone()
+            if row is None:
+                return None
+            votes = conn.execute(
+                "SELECT message_id, email, name, value FROM message_reactions"
+                " WHERE message_id = ? ORDER BY created_at",
+                (mid,),
+            ).fetchall()
+        m = _message(row)
+        for v in votes:
+            _add_vote(m.reactions, v)
+        return m
+
+    def react(self, cid: str, mid: int, user: User, value: int) -> Message | None:
+        """Upsert (value 1/-1) or remove (value 0) a user's reaction."""
+        with self.db.tx() as conn:
+            ok = conn.execute(
+                "SELECT 1 FROM messages WHERE id = ? AND conversation_id = ? AND hidden = 0",
+                (mid, cid),
+            ).fetchone()
+            if ok is None:
+                return None
+            if value == 0:
+                conn.execute(
+                    "DELETE FROM message_reactions WHERE message_id = ? AND email = ?",
+                    (mid, user.email),
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO message_reactions (message_id, email, name, value, created_at,"
+                    " delivered) VALUES (?, ?, ?, ?, ?, 0) ON CONFLICT(message_id, email)"
+                    " DO UPDATE SET value = excluded.value, name = excluded.name,"
+                    " created_at = excluded.created_at, delivered = 0",
+                    (mid, user.email, user.name, value, time.time()),
+                )
+        return self.message(cid, mid)
+
+    def take_reactions(self, cid: str) -> str:
+        """Undelivered reactions in this conversation as an agent-facing prefix; marks them delivered."""
+        with self.db.tx() as conn:
+            rows = conn.execute(
+                "SELECT r.message_id, r.email, r.name, r.value, m.role, m.author_name, m.content"
+                " FROM message_reactions r JOIN messages m ON m.id = r.message_id"
+                " WHERE m.conversation_id = ? AND r.delivered = 0 ORDER BY r.created_at",
+                (cid,),
+            ).fetchall()
+            if rows:
+                conn.execute(
+                    "UPDATE message_reactions SET delivered = 1 WHERE delivered = 0 AND"
+                    " message_id IN (SELECT id FROM messages WHERE conversation_id = ?)",
+                    (cid,),
+                )
+        return reactions_text(rows)
 
     def summaries(
         self, cid: str | None = None, limit: int = 200, project: str | None = None
@@ -391,6 +523,13 @@ class ConversationService:
         finally:
             current_project.reset(project_token)
 
+    async def react(self, cid: str, mid: int, user: User, value: int) -> Message:
+        message = await run_in_threadpool(lambda: self.store.react(cid, mid, user, value))
+        if message is None:
+            raise HTTPException(status_code=404, detail="message not found")
+        self._publish_message(message)
+        return message
+
     async def _reply(
         self, cid: str, user: User, body: PostBody, text: str, mine: Message
     ) -> PostResult:
@@ -398,9 +537,11 @@ class ConversationService:
             self._set_thinking(cid, user.name)
             try:
                 previous = await run_in_threadpool(self.store.interaction_id, cid)
+                # Reactions are a stage direction for the agent, not part of the stored message.
+                prefix = await run_in_threadpool(self.store.take_reactions, cid)
                 result = await run_in_threadpool(
                     lambda: agent_service.chat(
-                        text,
+                        prefix + text,
                         previous_interaction_id=previous,
                         mode=body.mode,
                         on_tool=lambda name, args, result: self._record_tool(
@@ -457,5 +598,11 @@ def build_router(service: ConversationService) -> APIRouter:
     @r.post("/{conversation_id}/messages", response_model=PostResult)
     async def post_message(conversation_id: str, body: PostBody, request: Request):
         return await service.post(conversation_id, current_user(request), body)
+
+    @r.post("/{conversation_id}/messages/{message_id}/reactions", response_model=Message)
+    async def react_to_message(
+        conversation_id: str, message_id: int, body: ReactBody, request: Request
+    ):
+        return await service.react(conversation_id, message_id, current_user(request), body.value)
 
     return r

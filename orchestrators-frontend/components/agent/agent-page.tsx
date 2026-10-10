@@ -13,6 +13,7 @@ import {
   createConversation,
   fetchMe,
   postConversationMessage,
+  reactToMessage,
   type AgentMode,
   type ConversationDetail,
   type ConversationMessage,
@@ -633,6 +634,7 @@ function Interview({
                 >
                   {message.content}
                 </div>
+                <ReactionBar message={message} me={me} />
               </div>
             );
           })}
@@ -758,6 +760,46 @@ function Composer({
           {error}
         </p>
       )}
+    </div>
+  );
+}
+
+function ReactionBar({
+  message,
+  me,
+}: {
+  message: ConversationMessage;
+  me: Me | null;
+}) {
+  const reactions = message.reactions;
+  const voters = reactions?.voters ?? [];
+  const mine = me ? voters.find((v) => v.email === me.email)?.value ?? 0 : 0;
+  const names = (value: number): string => {
+    const list = voters.filter((v) => v.value === value).map((v) => v.name);
+    return list.length ? list.join(", ") : value > 0 ? "Upvote" : "Downvote";
+  };
+  const react = (value: 1 | -1) => {
+    const next: 1 | -1 | 0 = mine === value ? 0 : value;
+    reactToMessage(message.conversation_id, message.id, next).catch(() => {});
+  };
+  const button = (value: 1 | -1, glyph: string, count: number) => (
+    <button
+      type="button"
+      onClick={() => react(value)}
+      title={names(value)}
+      className={cn(
+        "inline-flex items-center gap-1 rounded px-1 py-0.5 transition-colors hover:bg-accent hover:text-foreground",
+        mine === value && "text-[#5E6AD2]",
+      )}
+    >
+      <span aria-hidden>{glyph}</span>
+      {count > 0 && <span>{count}</span>}
+    </button>
+  );
+  return (
+    <div className="flex items-center gap-0.5 px-1 text-[11px] text-muted-foreground">
+      {button(1, "\u25B2", reactions?.up ?? 0)}
+      {button(-1, "\u25BC", reactions?.down ?? 0)}
     </div>
   );
 }

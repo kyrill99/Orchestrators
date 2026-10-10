@@ -45,6 +45,13 @@ export type ConversationMessage = {
   mode: AgentMode;
   /** Unix seconds. */
   created_at: number;
+  reactions?: MessageReactions;
+};
+
+export type MessageReactions = {
+  up: number;
+  down: number;
+  voters: { email: string; name: string; value: number }[];
 };
 
 export type ConversationSummary = {
@@ -213,6 +220,18 @@ export function postConversationMessage(
     method: "POST",
     body: JSON.stringify({ content, mode, hidden }),
   });
+}
+
+/** Upvote (1), downvote (-1) or clear (0) a message; the update arrives over SSE too. */
+export function reactToMessage(
+  cid: string,
+  mid: string | number,
+  value: 1 | -1 | 0,
+): Promise<ConversationMessage> {
+  return request(
+    `/api/conversations/${encodeURIComponent(cid)}/messages/${encodeURIComponent(String(mid))}/reactions`,
+    { method: "POST", body: JSON.stringify({ value }) },
+  );
 }
 
 /** Server-Sent Events: conversation, message, thinking, resync. */
