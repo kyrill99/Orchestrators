@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from db import Database  # noqa: E402
 from projects import (  # noqa: E402
     DEFAULT, ORCHESTRATORS, ProjectGraphs, ProjectMiddleware, ProjectRegistry, ScopedProxy,
-    current_project, project_from_cookie,
+    current_project, project_from_cookie, project_from_scope,
 )
 from taskgraph import Actor, RecordRunner, RunManager, TaskGraphService  # noqa: E402
 from taskgraph.loop import auto_start  # noqa: E402
@@ -96,6 +96,86 @@ class ProjectsTest(unittest.TestCase):
         asyncio.run(go())
         self.assertEqual(seen, ["game", DEFAULT])
         self.assertEqual(current_project.get(), DEFAULT)
+
+
+    def test_project_from_header_query_then_cookie(self):
+        self.registry.create("Game")
+        cookie = (b"cookie", b"orch_project=game")
+
+        def scope(headers=(), query=b""):
+            return {"type": "http", "headers": list(headers), "query_string": query}
+
+        def pick(sc):
+            return project_from_scope(sc, self.registry)
+
+        # The URL's project (header / query) wins over the last-used cookie.
+        self.assertEqual(pick(scope([cookie, (b"x-orch-project", b"default")])), DEFAULT)
+        self.assertEqual(pick(scope([(b"x-orch-project", b"game")])), "game")
+        self.assertEqual(pick(scope([cookie], b"channel=runs&project=default")), DEFAULT)
+        self.assertEqual(pick(scope([], b"channel=runs&project=game")), "game")
+        self.assertEqual(pick(scope([(b"x-orch-project", b"game")], b"project=default")), "game")
+        # Neither: the cookie. Unknown ids: default (not the cookie).
+        self.assertEqual(pick(scope([cookie], b"channel=runs")), "game")
+        self.assertEqual(pick(scope([cookie, (b"x-orch-project", b"nope")])), DEFAULT)
+        self.assertEqual(pick(scope([cookie], b"project=nope")), DEFAULT)
+        self.assertEqual(pick(scope([(b"x-orch-project", b"")])), DEFAULT)
+
+    def test_http_and_websocket_follow_header_and_query(self):
+        from fastapi import FastAPI, WebSocket
+        from fastapi.testclient import TestClient
+
+        self.registry.create("Game")
+        app = FastAPI()
+        app.add_middleware(ProjectMiddleware, registry=self.registry)
+
+        @app.get("/api/which")
+        def which():
+            return {"project": current_project.get()}
+
+        @app.websocket("/api/ws")
+        async def ws(websocket: WebSocket):
+            await websocket.accept()
+            await websocket.send_json({"project": current_project.get()})
+            await websocket.close()
+
+        client = TestClient(app)
+        client.cookies.set("orch_project", "game")
+        self.assertEqual(client.get("/api/which").json(), {"project": "game"})
+        self.assertEqual(
+            client.get("/api/which", headers={"X-Orch-Project": "default"}).json(),
+            {"project": DEFAULT},
+        )
+        self.assertEqual(client.get("/api/which?project=default").json(), {"project": DEFAULT})
+        client.cookies.clear()
+        with client.websocket_connect("/api/ws?project=game") as conn:
+            self.assertEqual(conn.receive_json(), {"project": "game"})
+        with client.websocket_connect("/api/ws") as conn:
+            self.assertEqual(conn.receive_json(), {"project": DEFAULT})
+
+
+    def test_router_create_update_and_current(self):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        from projects import build_router
+
+        app = FastAPI()
+        app.add_middleware(ProjectMiddleware, registry=self.registry)
+        app.include_router(build_router(self.registry, lambda: []))
+        client = TestClient(app)
+        created = client.post(
+            "/api/projects",
+            json={"name": "Snake Game", "description": "Tiny game"},
+            headers={"X-Forwarded-Email": "a@b.c"},
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        self.assertEqual(created.json()["id"], "snake-game")
+        patched = client.patch("/api/projects/snake-game", json={"description": "Brief"})
+        self.assertEqual(patched.status_code, 200, patched.text)
+        self.assertEqual(patched.json()["description"], "Brief")
+        current = client.get("/api/projects/current", headers={"X-Orch-Project": "snake-game"})
+        self.assertEqual(current.json()["id"], "snake-game")
+        self.assertEqual(client.get("/api/projects/current").json()["id"], DEFAULT)
 
 
 if __name__ == "__main__":

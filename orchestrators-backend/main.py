@@ -84,7 +84,8 @@ default_taskgraph = TaskGraphService(
     PublishingEventStore(open_taskgraph_store(db), broker, "graph")
 )
 
-# Projects (docs/architecture/projects.md): the orch_project cookie picks a project
+# Projects (docs/architecture/projects.md): the URL's project (X-Orch-Project header or
+# ?project=, else the last-used orch_project cookie) picks a project
 # per request; `taskgraph`, `runs`, `runlog`, `scratchpads` and `engine` below are
 # proxies resolving to that project's own instances.
 projects = ProjectRegistry(db)

@@ -1,6 +1,7 @@
 """Projects: one task graph + brief per project. See docs/architecture/projects.md.
 
-The active project comes from the `orch_project` cookie. `ProjectMiddleware` puts it
+The active project comes from the request (header `X-Orch-Project`, query `project=`,
+else the last-used `orch_project` cookie). `ProjectMiddleware` puts it
 in the `current_project` context variable; `ScopedProxy` objects resolve the task
 graph service / run manager of that project on every attribute access, so routers
 and agent tools built for a single graph work per project unchanged.
@@ -18,6 +19,7 @@ from typing import Any
 from db import Database
 
 COOKIE = "orch_project"
+HEADER = b"x-orch-project"  # ASGI header names are lower-case
 DEFAULT = "default"
 ORCHESTRATORS = "orchestrators"
 
@@ -216,8 +218,33 @@ def project_from_cookie(header: str | None, registry: ProjectRegistry | None = N
     return pid
 
 
+def project_from_scope(scope: dict, registry: ProjectRegistry | None = None) -> str:
+    """The request's project: header `X-Orch-Project`, else query `project=`, else the
+    `orch_project` cookie (the last-used project), else `default`.
+
+    The frontend takes the project from its URL (`/p/<id>/...`) and sends the header on
+    fetches and the query parameter on EventSource / WebSocket URLs, which cannot set
+    headers. Unknown ids fall back to `default`.
+    """
+    from urllib.parse import parse_qs
+
+    header = cookie = None
+    for k, v in scope.get("headers") or []:
+        if k == HEADER and header is None:
+            header = v.decode("latin-1").strip()
+        elif k == b"cookie" and cookie is None:
+            cookie = v.decode("latin-1")
+    pid = header
+    if not pid:
+        query = (scope.get("query_string") or b"").decode("latin-1")
+        pid = (parse_qs(query).get("project") or [""])[0].strip()
+    if pid:
+        return pid if registry is None or registry.exists(pid) else DEFAULT
+    return project_from_cookie(cookie, registry)
+
+
 class ProjectMiddleware:
-    """Pure ASGI middleware: sets `current_project` from the cookie for the request."""
+    """Pure ASGI middleware: sets `current_project` (see `project_from_scope`) for the request."""
 
     def __init__(self, app: Any, registry: ProjectRegistry):
         self.app = app
@@ -227,12 +254,7 @@ class ProjectMiddleware:
         if scope.get("type") not in ("http", "websocket"):
             await self.app(scope, receive, send)
             return
-        header = None
-        for k, v in scope.get("headers") or []:
-            if k == b"cookie":
-                header = v.decode("latin-1")
-                break
-        token = current_project.set(project_from_cookie(header, self.registry))
+        token = current_project.set(project_from_scope(scope, self.registry))
         try:
             await self.app(scope, receive, send)
         finally:
