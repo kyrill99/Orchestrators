@@ -11,6 +11,7 @@ import {
 } from "@/lib/assignees";
 import { fetchTask } from "@/lib/taskgraph-api";
 import { AssigneePicker } from "@/components/task/assignee-picker";
+import { OwnerActions } from "@/components/task/owner-actions";
 import { RunControl } from "@/components/task/run-control";
 import { StatusBadge } from "@/components/task/status-badge";
 import { Button } from "@/components/ui/button";
@@ -138,6 +139,10 @@ export function TaskIssuePage({ id }: { id: string }) {
           <h1 className="text-xl font-semibold tracking-[-0.02em] text-foreground">
             {task.title}
           </h1>
+
+          <div className="mt-4">
+            <OwnerActions taskId={task.id} />
+          </div>
           {task.description ? (
             <p className="mt-3 text-[13px] leading-relaxed text-muted-foreground">
               {task.description}
