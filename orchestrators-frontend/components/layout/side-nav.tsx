@@ -9,6 +9,7 @@ import {
   MousePointer2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { SystemStats } from "@/components/layout/system-stats";
 import { UpdateControl } from "@/components/layout/update-control";
 
 const items = [
@@ -61,7 +62,10 @@ export function SideNav() {
         })}
       </nav>
 
-      <UpdateControl />
+      <div className="mt-auto flex flex-col gap-3">
+        <SystemStats />
+        <UpdateControl />
+      </div>
     </aside>
   );
 }

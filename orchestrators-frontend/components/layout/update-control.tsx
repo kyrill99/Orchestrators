@@ -56,7 +56,7 @@ export function UpdateControl() {
         : null;
 
   return (
-    <div className="mt-auto flex flex-col gap-1 px-2 text-[12px] text-muted-foreground">
+    <div className="flex flex-col gap-1 px-2 text-[12px] text-muted-foreground">
       {note && (
         <span
           className={cn(

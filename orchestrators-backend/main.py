@@ -17,6 +17,7 @@ from memory import MarkdownMemoryStore, MemoryService
 from memory.api import build_router as build_memory_router
 from memory.distill import GeminiDistiller
 from selfupdate import build_router as build_selfupdate_router
+from sysstats import build_router as build_sysstats_router
 from taskgraph import JsonlEventStore, TaskGraphService
 from taskgraph.api import build_router
 
@@ -51,6 +52,7 @@ app.include_router(build_memory_router(memory, taskgraph))
 # Must match DATA in deploy/gcp/update.sh.
 app.include_router(build_selfupdate_router("data"))
 app.include_router(build_changelog_router("data"))
+app.include_router(build_sysstats_router())
 
 
 class ChatRequest(BaseModel):
