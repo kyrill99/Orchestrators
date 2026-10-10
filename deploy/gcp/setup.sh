@@ -16,6 +16,7 @@ trap 'echo "!! setup.sh FAILED at line $LINENO: $BASH_COMMAND" >&2' ERR
 ALLOWED_EMAILS="${ALLOWED_EMAILS:-}"          # comma-separated; empty = any Google account
 REPO_URL="${REPO_URL:-https://github.com/kyrill99/Orchestrators.git}"
 BRANCH="${BRANCH:-main}"
+REPO_SLUG=$(sed -E 's#^(https://|git@)github.com[:/]##; s#\.git$##' <<<"$REPO_URL")
 APP_DIR=/opt/orchestrators
 APP_USER=orchestrators
 
@@ -187,6 +188,7 @@ Description=Orchestrators self-update (git pull, rebuild, restart)
 [Service]
 Type=oneshot
 Environment=BRANCH=${BRANCH}
+Environment=REPO_SLUG=${REPO_SLUG}
 ExecStart=/usr/local/sbin/orchestrators-update
 EOF
 
