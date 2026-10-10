@@ -20,6 +20,10 @@ BRANCH="${BRANCH:-main}"
 REPO_SLUG="${REPO_SLUG:-kyrill99/Orchestrators}"
 DATA="$APP_DIR/orchestrators-backend/data"
 STATUS="$DATA/update-status.json"
+# Last commit that was fully deployed (built, restarted, healthy). Changes are
+# measured from here, not from the checkout, which a failed run may have
+# moved without deploying.
+DEPLOYED="$DATA/update-deployed"
 LOG="$DATA/update.log"
 SELF=/usr/local/sbin/orchestrators-update
 
@@ -105,14 +109,20 @@ step fetch
 run as_app git -C "$APP_DIR" fetch origin "$BRANCH"
 TO=$(as_app git -C "$APP_DIR" rev-parse --short "origin/$BRANCH")
 status to "$TO"
-if [[ "$FROM" == "$TO" ]]; then
+BASE=$(cat "$DEPLOYED" 2>/dev/null || true)
+as_app git -C "$APP_DIR" cat-file -e "${BASE:-none}^{commit}" 2>/dev/null || BASE=$FROM
+if [[ "$FROM" == "$TO" && "$BASE" == "$TO" ]]; then
   done_step "already at $TO"
   status finish up_to_date
   exit 0
 fi
-CHANGED=$(as_app git -C "$APP_DIR" diff --name-only "$FROM" "$TO")
+CHANGED=$(as_app git -C "$APP_DIR" diff --name-only "$BASE" "$TO")
 run as_app git -C "$APP_DIR" reset --hard "origin/$BRANCH"
-done_step "$FROM → $TO, $(wc -l <<<"$CHANGED") files"
+if [[ "$BASE" != "$FROM" ]]; then
+  done_step "$BASE → $TO, $(wc -l <<<"$CHANGED") files (incl. undeployed $BASE..$FROM)"
+else
+  done_step "$FROM → $TO, $(wc -l <<<"$CHANGED") files"
+fi
 
 changed() { grep -q "^$1" <<<"$CHANGED"; }
 FRONT=0; BACK=0
@@ -152,6 +162,7 @@ SERVICES=()
 if [[ ${#SERVICES[@]} -eq 0 ]]; then
   skip restart "nothing to restart"
   skip verify "nothing restarted"
+  echo "$TO" > "$DEPLOYED"
   status finish ok
   exit 0
 fi
@@ -175,5 +186,6 @@ wait_http http://127.0.0.1:8000/health
 wait_http http://127.0.0.1:3000/
 done_step "backend and frontend answering"
 
+echo "$TO" > "$DEPLOYED"
 status finish ok
 echo "==> Updated $FROM -> $TO"
