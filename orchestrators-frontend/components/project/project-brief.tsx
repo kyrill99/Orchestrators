@@ -17,6 +17,7 @@ export function ProjectBrief() {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
+  const [nameDraft, setNameDraft] = useState<string>("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -55,7 +56,11 @@ export function ProjectBrief() {
     setBusy(true);
     setError(null);
     try {
-      const updated = await updateProject(project.id, { description: draft });
+      const name = nameDraft.trim();
+      const updated = await updateProject(project.id, {
+        description: draft,
+        ...(name && name !== project.name ? { name } : {}),
+      });
       setProject(updated);
       setEditing(false);
     } catch (err) {
@@ -87,9 +92,19 @@ export function ProjectBrief() {
       {open ? (
         <div className="absolute top-full right-0 z-50 mt-1.5 w-96 max-w-[calc(100vw-2rem)] rounded-lg border border-border bg-popover p-3 text-popover-foreground shadow-lg">
           <div className="mb-1 flex items-center justify-between gap-2">
-            <span className="truncate text-[13px] font-medium">
-              {project.name || project.id}
-            </span>
+            {editing ? (
+              <input
+                aria-label="Project name"
+                value={nameDraft}
+                onChange={(event) => setNameDraft(event.target.value)}
+                disabled={busy}
+                className="h-7 min-w-0 flex-1 rounded-md border border-input bg-transparent px-2 text-[13px] font-medium outline-none focus-visible:border-ring"
+              />
+            ) : (
+              <span className="truncate text-[13px] font-medium">
+                {project.name || project.id}
+              </span>
+            )}
             {!editing ? (
               <Button
                 type="button"
@@ -97,6 +112,7 @@ export function ProjectBrief() {
                 size="xs"
                 onClick={() => {
                   setDraft(project.description ?? "");
+                  setNameDraft(project.name ?? "");
                   setEditing(true);
                 }}
               >
