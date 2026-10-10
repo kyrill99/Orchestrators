@@ -54,13 +54,23 @@ export function TaskGraph() {
         seq,
       } satisfies GraphNodeData & { seq: number },
     }));
-    const flowEdges: Edge[] = edges.map((edge) => ({
-      id: edge.id,
-      source: edge.source,
-      target: edge.target,
-      type: "smoothstep",
-      style: { stroke: "#e4e4e7", strokeWidth: 1.25 },
-    }));
+    const running = new Set(
+      tasks.filter((task) => task.status === "running").map((task) => task.id),
+    );
+    const flowEdges: Edge[] = edges.map((edge) => {
+      // Work flowing into a task an agent is running right now.
+      const live = running.has(edge.target);
+      return {
+        id: edge.id,
+        source: edge.source,
+        target: edge.target,
+        type: "smoothstep",
+        animated: live,
+        style: live
+          ? { stroke: "#5E6AD2", strokeWidth: 1.5 }
+          : { stroke: "#e4e4e7", strokeWidth: 1.25 },
+      };
+    });
     return { nodes, edges: flowEdges, seq };
   }, [data, assigneeTick]);
 

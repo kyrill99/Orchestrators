@@ -103,9 +103,17 @@ function NodeChrome({
         selected
           ? "border-foreground/40 shadow-[0_1px_3px_rgba(0,0,0,0.08)]"
           : "border-border hover:border-foreground/20",
+        data.status === "running" &&
+          "border-[#5E6AD2]/50 motion-safe:animate-[mini-graph-breathe_2.8s_ease-in-out_infinite]",
         className,
       )}
     >
+      {data.status === "running" ? (
+        <span className="pointer-events-none absolute -top-1 -left-1 flex size-2.5">
+          <span className="absolute inline-flex size-full rounded-full bg-[#5E6AD2] opacity-60 motion-safe:animate-ping" />
+          <span className="relative inline-flex size-2.5 rounded-full bg-[#5E6AD2]" />
+        </span>
+      ) : null}
       <NodePresence id={id} />
       <Handle
         type="target"
