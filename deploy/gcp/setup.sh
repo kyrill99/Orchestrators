@@ -9,6 +9,7 @@
 #
 # Re-run any time to pull the latest main and rebuild.
 set -euo pipefail
+trap 'echo "!! setup.sh FAILED at line $LINENO: $BASH_COMMAND" >&2' ERR
 
 : "${OAUTH_CLIENT_ID:?set OAUTH_CLIENT_ID}"
 : "${OAUTH_CLIENT_SECRET:?set OAUTH_CLIENT_SECRET}"
@@ -27,8 +28,9 @@ echo "==> Public URL will be https://${HOST}"
 
 echo "==> Packages"
 export DEBIAN_FRONTEND=noninteractive
+rm -f /etc/apt/sources.list.d/caddy-stable.list
 apt-get update -qq
-apt-get install -y -qq git curl ca-certificates gnupg python3 python3-venv debian-keyring debian-archive-keyring apt-transport-https >/dev/null
+apt-get install -y -qq git curl ca-certificates gnupg python3 python3-venv libcap2-bin file >/dev/null
 
 # Swap: `next build` needs more than 1 GB RAM on small VMs.
 if ! swapon --show | grep -q . ; then
@@ -43,17 +45,18 @@ if ! command -v node >/dev/null || [[ "$(node -v | cut -d. -f1 | tr -d v)" -lt 2
   apt-get install -y -qq nodejs >/dev/null
 fi
 
+# Remove a broken third-party Caddy apt source from earlier runs.
+rm -f /etc/apt/sources.list.d/caddy-stable.list
 if [[ ! -f /lib/systemd/system/caddy.service && ! -f /etc/systemd/system/caddy.service ]]; then
-  echo "==> Caddy"
-  curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --batch --yes --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg || true
-  curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' > /etc/apt/sources.list.d/caddy-stable.list || true
-  (apt-get update -qq && apt-get install -y -qq caddy >/dev/null) || echo "   apt install of caddy failed, falling back to binary"
+  echo "==> Caddy (distro package)"
+  apt-get update -qq && apt-get install -y -qq caddy >/dev/null 2>&1 || echo "   distro caddy not available, using GitHub release"
 fi
 if [[ ! -f /lib/systemd/system/caddy.service && ! -f /etc/systemd/system/caddy.service ]]; then
   # Fallback: static binary + our own unit
   ARCH=$(dpkg --print-architecture)
-  curl -fsSL "https://caddyserver.com/api/download?os=linux&arch=${ARCH}" -o /usr/local/bin/caddy
-  chmod 755 /usr/local/bin/caddy
+  CTAG=$(curl -fsS https://api.github.com/repos/caddyserver/caddy/releases/latest | python3 -c 'import sys,json;print(json.load(sys.stdin)["tag_name"])')
+  curl -fsSL "https://github.com/caddyserver/caddy/releases/download/${CTAG}/caddy_${CTAG#v}_linux_${ARCH}.tar.gz" | tar xz -C /tmp caddy
+  install -m 755 /tmp/caddy /usr/local/bin/caddy
   id -u caddy >/dev/null 2>&1 || useradd --system --home /var/lib/caddy --create-home --shell /usr/sbin/nologin caddy
   setcap cap_net_bind_service=+ep /usr/local/bin/caddy
   cat > /etc/systemd/system/caddy.service <<'EOF'
