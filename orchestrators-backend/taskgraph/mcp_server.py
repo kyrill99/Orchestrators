@@ -5,6 +5,7 @@ Env:  TASKGRAPH_STORE, TASKGRAPH_PATH, DATABASE_PATH  storage, see storage.py
       TASKGRAPH_AGENT_ID  agent id recorded on changes (default: planner)
       TASKGRAPH_RUNNER, TASKGRAPH_RUNNER_CMD, TASKGRAPH_RUN_LOGS  see runs.py
       MEMORY_PATH, MEMORY_PROJECT_ID, MEMORY_USER_ID  see memory/mcp_server.py
+      DATABASE_PATH, ISSUES_PATH  issue list (see issues.py)
 """
 
 from __future__ import annotations
@@ -15,7 +16,9 @@ from typing import Any, Literal
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
+import issues as issues_mcp
 from agent_identity import system_prompt
+from issues import IssueService
 from memory import mcp_server as memory_mcp
 from memory.service import MemoryService
 
@@ -61,6 +64,7 @@ def build_server(
     agent_id: str = "planner",
     memory: MemoryService | None = None,
     runs: RunManager | None = None,
+    issues: IssueService | None = None,
 ) -> MCPServer:
     """With `memory`, the planner also gets the memory tools on this server.
     `runs` executes agent runs; by default runs are only recorded."""
@@ -68,9 +72,13 @@ def build_server(
     instructions = system_prompt("planner") + "\n\n## Tools\n\n" + INSTRUCTIONS
     if memory is not None:
         instructions += "\n\n" + memory_mcp.INSTRUCTIONS
+    if issues is not None:
+        instructions += "\n\n" + issues_mcp.MCP_INSTRUCTIONS
     server = MCPServer("orchestrators-taskgraph", instructions=instructions)
     if memory is not None:
         memory_mcp.register_tools(server, memory, agent_id)
+    if issues is not None:
+        issues_mcp.register_mcp_tools(server, issues, agent_id)
     me = Actor(type="agent", id=agent_id)
 
     def run(fn, *args, **kwargs) -> Any:
@@ -275,7 +283,9 @@ def main() -> None:
     service = TaskGraphService(open_taskgraph_store())
     agent_id = os.environ.get("TASKGRAPH_AGENT_ID", "planner")
     runs = RunManager(service, runner_from_env())
-    build_server(service, agent_id, memory_mcp.service_from_env(), runs).run("stdio")
+    build_server(
+        service, agent_id, memory_mcp.service_from_env(), runs, issues_mcp.service_from_env()
+    ).run("stdio")
 
 
 if __name__ == "__main__":

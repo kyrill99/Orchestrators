@@ -95,6 +95,7 @@ API docs (when the FastAPI app is running): [http://localhost:8000/docs](http://
 | `GET` | `/api/conversations/{id}` | One conversation with its messages |
 | `POST` | `/api/conversations/{id}/messages` | Post a message (`content`, `mode`, `hidden?`); stores it, asks the agent (Gemini) and returns `{message, reply}` |
 | `GET` | `/api/conversations/stream` | Server-Sent Events: `conversation`, `message`, `thinking`, `resync` (supports `Last-Event-ID`) |
+| `GET/POST` | `/api/issues` | Issue list (bug reports with screenshots); see `issues.py` for the full API |
 
 Voice flow: the browser asks for a token, opens Gradium STT/TTS WebSockets with `?token=...`, streams mic audio into the agent textbox, then speaks the agent reply with TTS. The Gradium API key never leaves the server.
 

@@ -13,6 +13,7 @@ from typing import Any
 
 from pydantic import TypeAdapter, ValidationError
 
+from issues import IssueError, IssueService, agent_author
 from memory.models import MemorySource
 from memory.service import DEFAULT_ID, MemoryService, MemoryServiceError, user_key
 from taskgraph.models import (
@@ -348,6 +349,116 @@ TOOL_DECLARATIONS: list[dict[str, Any]] = [
     },
 ]
 
+# Issue tools (same names as issues.register_mcp_tools). Offered only when
+# AgentTools has an IssueService.
+ISSUE_TOOL_DECLARATIONS: list[dict[str, Any]] = [
+    {
+        "type": "function",
+        "name": "list_issues",
+        "description": (
+            "Issues (bug reports, requests), newest first. status: comma-separated "
+            "draft/open/in_progress/closed or 'all' (default: everything published). "
+            "search matches title, description or #number."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "status": {"type": "string"},
+                "search": {"type": "string"},
+                "author": {"type": "string", "description": "Author email"},
+                "assignee": {"type": "string"},
+                "label": {"type": "string"},
+                "limit": {"type": "integer"},
+            },
+        },
+    },
+    {
+        "type": "function",
+        "name": "get_issue",
+        "description": (
+            "One issue (id or number like '#12') with description, comments and "
+            "screenshot metadata (url, path)."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {"issue": {"type": "string"}},
+            "required": ["issue"],
+        },
+    },
+    {
+        "type": "function",
+        "name": "create_issue",
+        "description": "File a new (open) issue, e.g. a bug found while working.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "description": {"type": "string"},
+                "labels": {"type": "array", "items": {"type": "string"}},
+                "assignee": {"type": "string"},
+            },
+            "required": ["title"],
+        },
+    },
+    {
+        "type": "function",
+        "name": "update_issue",
+        "description": (
+            "Change an issue's title, description, labels or assignee ('' unassigns, "
+            "'agent:<id>' or an email), or move it between open and in_progress."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "issue": {"type": "string"},
+                "title": {"type": "string"},
+                "description": {"type": "string"},
+                "status": {"type": "string", "enum": ["open", "in_progress"]},
+                "labels": {"type": "array", "items": {"type": "string"}},
+                "assignee": {"type": "string"},
+            },
+            "required": ["issue"],
+        },
+    },
+    {
+        "type": "function",
+        "name": "comment_on_issue",
+        "description": "Add a comment (markdown) to an issue: progress, findings, questions.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "issue": {"type": "string"},
+                "body": {"type": "string"},
+            },
+            "required": ["issue", "body"],
+        },
+    },
+    {
+        "type": "function",
+        "name": "close_issue",
+        "description": "Close an issue, saying why (fixed, duplicate of #3, won't fix...).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "issue": {"type": "string"},
+                "reason": {"type": "string"},
+            },
+            "required": ["issue", "reason"],
+        },
+    },
+    {
+        "type": "function",
+        "name": "reopen_issue",
+        "description": "Reopen a closed issue.",
+        "parameters": {
+            "type": "object",
+            "properties": {"issue": {"type": "string"}},
+            "required": ["issue"],
+        },
+    },
+]
+ISSUE_TOOL_NAMES = {t["name"] for t in ISSUE_TOOL_DECLARATIONS}
+
 
 def _dump(out: Any) -> Any:
     if isinstance(out, list):
@@ -358,7 +469,8 @@ def _dump(out: Any) -> Any:
 
 
 class AgentTools:
-    """Dispatch Gemini function calls onto MemoryService + TaskGraphService."""
+    """Dispatch Gemini function calls onto MemoryService + TaskGraphService
+    (+ IssueService when given)."""
 
     def __init__(
         self,
@@ -368,8 +480,10 @@ class AgentTools:
         agent_id: str | None = None,
         project_id: str | None = None,
         user_id: str | None = None,
+        issues: IssueService | None = None,
     ) -> None:
         self.memory = memory
+        self.issues = issues
         self.taskgraph = taskgraph
         self.agent_id = agent_id or os.environ.get("INTERVIEW_AGENT_ID", "interview")
         self.project_id = project_id or os.environ.get("MEMORY_PROJECT_ID", DEFAULT_ID)
@@ -391,13 +505,16 @@ class AgentTools:
         return self.memory.context(project_id=self.project_id, user_id=self.user_id)["text"]
 
     def declarations(self) -> list[dict[str, Any]]:
-        return list(TOOL_DECLARATIONS)
+        tools = list(TOOL_DECLARATIONS)
+        if self.issues is not None:
+            tools += ISSUE_TOOL_DECLARATIONS
+        return tools
 
     def dispatch(self, name: str, arguments: dict[str, Any] | None) -> Any:
         args = arguments or {}
         try:
             return self._dispatch(name, args)
-        except (MemoryServiceError, TaskGraphError) as e:
+        except (MemoryServiceError, TaskGraphError, IssueError) as e:
             code = getattr(e, "code", "error")
             return {"error": f"{code}: {e}"}
         except (ValidationError, TypeError, ValueError, KeyError) as e:
@@ -409,7 +526,54 @@ class AgentTools:
     def _submit(self, ops: list[Op], reason: str) -> Any:
         return self._run_graph(self.taskgraph.submit, self.me, ops, reason)
 
+    def _dispatch_issue(self, name: str, args: dict[str, Any]) -> Any:
+        me = agent_author(self.agent_id)
+        issues = self.issues
+        match name:
+            case "list_issues":
+                return issues.list_issues(
+                    status=args.get("status"),
+                    search=args.get("search"),
+                    author=args.get("author"),
+                    assignee=args.get("assignee"),
+                    label=args.get("label"),
+                    limit=int(args.get("limit", 50)),
+                )
+            case "get_issue":
+                issue = issues.get(args["issue"])
+                for a in issue["attachments"]:
+                    a["path"] = str(issues.attachment_path(a).resolve())
+                return issue
+            case "create_issue":
+                return issues.create(
+                    me,
+                    title=args["title"],
+                    description=args.get("description", ""),
+                    labels=args.get("labels"),
+                    assignee=args.get("assignee"),
+                )
+            case "update_issue":
+                return issues.update(
+                    me,
+                    args["issue"],
+                    title=args.get("title"),
+                    description=args.get("description"),
+                    status=args.get("status"),
+                    labels=args.get("labels"),
+                    assignee=args.get("assignee"),
+                )
+            case "comment_on_issue":
+                return issues.add_comment(me, args["issue"], args["body"])
+            case "close_issue":
+                return issues.close(me, args["issue"], args.get("reason"))
+            case "reopen_issue":
+                return issues.reopen(me, args["issue"])
+            case _:
+                return {"error": f"unknown tool: {name}"}
+
     def _dispatch(self, name: str, args: dict[str, Any]) -> Any:
+        if self.issues is not None and name in ISSUE_TOOL_NAMES:
+            return self._dispatch_issue(name, args)
         match name:
             case "get_context":
                 return _dump(

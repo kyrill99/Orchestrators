@@ -23,6 +23,8 @@ from db import Database
 from identity import current_user
 from events import Broker, PublishingEventStore
 from events import build_router as build_events_router
+from issues import IssueService
+from issues import build_router as build_issues_router
 from memory import MemoryService
 from memory.api import build_router as build_memory_router
 from memory.distill import GeminiDistiller
@@ -76,8 +78,12 @@ memory = MemoryService(
 )
 app.include_router(build_memory_router(memory, taskgraph))
 
-# Interview chat uses the same memory/taskgraph ops as MCP, in-process.
-configure_tools(AgentTools(memory, taskgraph))
+# Issue list; screenshots under data/issues (ISSUES_PATH).
+issues = IssueService(db)
+app.include_router(build_issues_router(issues))
+
+# Interview chat uses the same memory/taskgraph/issue ops as MCP, in-process.
+configure_tools(AgentTools(memory, taskgraph, issues=issues))
 
 # Must match DATA in deploy/gcp/update.sh.
 app.include_router(build_selfupdate_router("data"))

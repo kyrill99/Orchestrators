@@ -291,6 +291,7 @@ class McpRunToolsTest(unittest.TestCase):
                 "DATABASE_PATH": os.path.join(d, "o.db"),
                 "TASKGRAPH_PATH": os.path.join(d, "g.jsonl"),
                 "MEMORY_PATH": os.path.join(d, "memory"),
+                "ISSUES_PATH": os.path.join(d, "issues"),
                 "TASKGRAPH_RUNNER": "subprocess",
                 "TASKGRAPH_RUNNER_CMD": f'"{sys.executable}" -c "import sys; print(sys.stdin.read())"',
             }
