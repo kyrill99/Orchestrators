@@ -11,11 +11,16 @@ Every write goes through `submit(actor, ops, reason)`:
        changes relations or resolves a decision; status/comments apply directly.
      - "ask-all": every agent changeset waits for approval.
 3. Agents must give a `reason`; it is stored on every event and shown in activity.
+
+Agent runs (`start_run` / `end_run`) are runtime records, not changesets: they
+say which agent is working on which task. They live in the same event log; what
+actually executes a run is up to the runner in `runs.py`.
 """
 
 from __future__ import annotations
 
 import re
+import threading
 from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
 from typing import Any
@@ -24,12 +29,16 @@ from .graph import GraphState, apply_event, dump_op
 from .models import (
     STRUCTURAL_OPS,
     Actor,
+    AgentRun,
+    AssignTask,
     Autonomy,
     Changeset,
     ChangesetStatus,
     Event,
     Op,
     ProjectSettings,
+    RunStatus,
+    SetStatus,
     SubmitResult,
     Task,
 )
@@ -71,6 +80,10 @@ class TaskGraphService:
         self.store: EventStore = store if store is not None else MemoryEventStore()
         self.clock = clock
         self.state = GraphState()
+        # MCP tools, FastAPI handlers and run watchers use worker threads.
+        # Readers hold this while catching up on the log; writers take it
+        # before the store lock (same order everywhere, so no deadlock).
+        self._sync_lock = threading.RLock()
         self._sync()
 
     # ------------------------------------------------------------------
@@ -78,8 +91,10 @@ class TaskGraphService:
     # ------------------------------------------------------------------
 
     def _sync(self) -> None:
-        for ev in self.store.read_since(self.state.seq):
-            apply_event(self.state, ev)
+        with self._sync_lock:
+            for ev in self.store.read_since(self.state.seq):
+                if ev.seq > self.state.seq:
+                    apply_event(self.state, ev)
 
     def _commit(self, draft: GraphState, events: list[Event]) -> None:
         self.store.append(events)
@@ -130,6 +145,7 @@ class TaskGraphService:
             "pendingChangesets": [
                 c.id for c in s.changesets.values() if c.status == "proposed"
             ],
+            "activeRuns": [r.dump() for r in s.runs.values() if r.active],
         }
 
     def task(self, task_id: str) -> dict[str, Any]:
@@ -139,6 +155,8 @@ class TaskGraphService:
         data["activity"] = [a.dump() for a in self.state.activity(task_id)]
         data["blocks"] = [t.id for t in self.state.tasks.values() if task_id in t.blocked_by]
         data["children"] = [t.id for t in self.state.tasks.values() if t.parent_id == task_id]
+        run = self.state.active_run(task_id)
+        data["activeRun"] = run.dump() if run else None
         return data
 
     def activity(
@@ -202,6 +220,23 @@ class TaskGraphService:
         self._sync()
         return [e.dump() for e in self.state.events if e.seq > seq][:limit]
 
+    def runs(
+        self, *, task_id: str | None = None, status: RunStatus | None = None, active: bool | None = None
+    ) -> list[AgentRun]:
+        """Agent runs, oldest first. `active=True` lists the agents working now."""
+        self._sync()
+        return [
+            r.model_copy(deep=True)
+            for r in self.state.runs.values()
+            if (task_id is None or r.task_id == task_id)
+            and (status is None or r.status == status)
+            and (active is None or r.active == active)
+        ]
+
+    def run(self, run_id: str) -> AgentRun:
+        self._sync()
+        return self._get_run(self.state, run_id).model_copy(deep=True)
+
     # ------------------------------------------------------------------
     # writes
     # ------------------------------------------------------------------
@@ -220,7 +255,7 @@ class TaskGraphService:
         if actor.type == "agent" and not (reason and reason.strip()):
             raise TaskGraphError("invalid", "agents must give a reason for every change")
 
-        with self.store.locked():
+        with self._sync_lock, self.store.locked():
             self._sync()
             if base_seq is not None and base_seq != self.state.seq:
                 raise TaskGraphError(
@@ -279,7 +314,7 @@ class TaskGraphService:
         """Approve (apply) or reject a proposed changeset. Humans only."""
         if actor.type != "human":
             raise TaskGraphError("forbidden", "only humans can review changesets")
-        with self.store.locked():
+        with self._sync_lock, self.store.locked():
             self._sync()
             cs = self.state.changesets.get(changeset_id)
             if cs is None:
@@ -334,7 +369,7 @@ class TaskGraphService:
         if not changes:
             raise TaskGraphError("invalid", "nothing to change")
         ProjectSettings.model_validate(changes)
-        with self.store.locked():
+        with self._sync_lock, self.store.locked():
             self._sync()
             draft = self.state.copy()
             parts = [f"{k} → {v}" for k, v in changes.items()]
@@ -344,6 +379,139 @@ class TaskGraphService:
             )
             self._commit(draft, [ev])
             return draft.settings.dump()
+
+    # agent runs ---------------------------------------------------------
+
+    def start_run(
+        self,
+        actor: Actor,
+        task_id: str,
+        *,
+        agent: Actor,
+        reason: str | None = None,
+        runner: str = "record",
+        instructions: str | None = None,
+        restart_of: str | None = None,
+    ) -> AgentRun:
+        """Record that `agent` starts working on `task_id`.
+
+        The task must be startable (exists, not closed, blockers closed, no
+        pending decision, no other active run). In the same write the task
+        moves to 'running' and is assigned to `agent`. Under autonomy
+        'ask-all' only humans may start runs.
+        """
+        if actor.type == "agent" and not (reason and reason.strip()):
+            raise TaskGraphError("invalid", "agents must give a reason for every change")
+        with self._sync_lock, self.store.locked():
+            self._sync()
+            s = self.state
+            if actor.type == "agent" and s.settings.autonomy == "ask-all":
+                raise TaskGraphError(
+                    "forbidden", "autonomy is 'ask-all': a human has to start agent runs"
+                )
+            task = self._get(s, task_id)
+            if task.status == "closed":
+                raise TaskGraphError(
+                    "invalid", f"'{task_id}' is closed; reopen it (set_status open) first"
+                )
+            if task.decision and task.decision.state == "pending":
+                raise TaskGraphError("invalid", f"'{task_id}' is waiting on a pending decision")
+            self._require_unblocked(s, task, "running")
+            current = s.active_run(task_id)
+            if current is not None:
+                raise TaskGraphError(
+                    "conflict", f"'{task_id}' already has an active run '{current.id}'"
+                )
+
+            draft = s.copy()
+            attempt = 1 + sum(1 for r in draft.runs.values() if r.task_id == task_id)
+            run = AgentRun(
+                id=f"run-{len(draft.runs) + 1}",
+                task_id=task_id,
+                agent=agent,
+                runner=runner,
+                attempt=attempt,
+                restart_of=restart_of,
+                instructions=instructions,
+                started_by=actor,
+                started_at=self.clock(),
+                reason=reason,
+            )
+            verb = "restarted" if restart_of else "started"
+            events = [
+                self._event(
+                    draft, actor, "run.started", run.dump(),
+                    task_ids=[task_id], reason=reason,
+                    summary=f"{actor.label()} {verb} {agent.label()} ({run.id}, attempt {attempt})",
+                )
+            ]
+            follow: list[Op] = []
+            if task.status != "running":
+                follow.append(SetStatus(task_id=task_id, status="running"))
+            if task.assignee != agent:
+                follow.append(AssignTask(task_id=task_id, assignee=agent))
+            events.extend(self._apply_ops(draft, actor, follow, None, reason))
+            self._commit(draft, events)
+            return draft.runs[run.id].model_copy(deep=True)
+
+    def update_run(self, run_id: str, **meta: Any) -> AgentRun:
+        """Attach runner details (pid, host, log_path) to a run."""
+        names = {"pid": "pid", "host": "host", "log_path": "logPath"}
+        payload = {names[k]: v for k, v in meta.items() if k in names and v is not None}
+        with self._sync_lock, self.store.locked():
+            self._sync()
+            run = self._get_run(self.state, run_id)
+            if not payload:
+                return run.model_copy(deep=True)
+            draft = self.state.copy()
+            ev = self._event(draft, run.agent, "run.updated", {"runId": run_id, **payload})
+            self._commit(draft, [ev])
+            return draft.runs[run_id].model_copy(deep=True)
+
+    def end_run(
+        self,
+        actor: Actor,
+        run_id: str,
+        status: RunStatus,
+        *,
+        exit_code: int | None = None,
+        note: str | None = None,
+        reason: str | None = None,
+    ) -> AgentRun:
+        """Record that a run ended. Ending a run that already ended is a no-op.
+
+        If the task is still 'running' it moves on: to 'in-review' when the run
+        succeeded, back to 'open' otherwise (stopped / failed / lost).
+        """
+        if status == "running":
+            raise TaskGraphError("invalid", "end_run needs a final status")
+        with self._sync_lock, self.store.locked():
+            self._sync()
+            run = self._get_run(self.state, run_id)
+            if not run.active:
+                return run.model_copy(deep=True)
+            draft = self.state.copy()
+            detail = f" (exit {exit_code})" if exit_code is not None else ""
+            events = [
+                self._event(
+                    draft, actor, "run.ended",
+                    {"runId": run_id, "status": status, "exitCode": exit_code, "note": note},
+                    task_ids=[run.task_id] if run.task_id in draft.tasks else [],
+                    reason=reason or note,
+                    summary=f"{run.agent.label()} {status}{detail} ({run_id})",
+                )
+            ]
+            task = draft.tasks.get(run.task_id)
+            if task is not None and task.status == "running":
+                nxt = "in-review" if status == "succeeded" else "open"
+                events.extend(
+                    self._apply_ops(
+                        draft, actor, [SetStatus(task_id=task.id, status=nxt)], None,
+                        reason or note or f"run {run_id} {status}",
+                    )
+                )
+            self._commit(draft, events)
+            return draft.runs[run_id].model_copy(deep=True)
 
     # convenience wrappers (each is a one-op changeset) ------------------
 
@@ -370,7 +538,7 @@ class TaskGraphService:
         return any(op.op in STRUCTURAL_OPS for op in ops)
 
     def _apply_ops(
-        self, draft: GraphState, actor: Actor, ops: Sequence[Op], cs_id: str, reason: str | None
+        self, draft: GraphState, actor: Actor, ops: Sequence[Op], cs_id: str | None, reason: str | None
     ) -> list[Event]:
         events = []
         for op in ops:
@@ -408,6 +576,13 @@ class TaskGraphService:
         if task is None:
             raise TaskGraphError("not_found", f"task '{task_id}' not found")
         return task
+
+    @staticmethod
+    def _get_run(state: GraphState, run_id: str) -> AgentRun:
+        run = state.runs.get(run_id)
+        if run is None:
+            raise TaskGraphError("not_found", f"run '{run_id}' not found")
+        return run
 
     def _require_unblocked(self, state: GraphState, task: Task, status: str) -> None:
         if status not in WORK_STATUSES:
@@ -505,7 +680,15 @@ class TaskGraphService:
                 raise TaskGraphError("invalid", f"'{task.id}' has no pending decision")
             return op
 
-        # task.assign, task.delete, comment.add: existence check is enough
+        if op.op == "task.delete":
+            run = s.active_run(task.id)
+            if run is not None:
+                raise TaskGraphError(
+                    "conflict", f"'{task.id}' has an active run '{run.id}'; stop it first"
+                )
+            return op
+
+        # task.assign, comment.add: existence check is enough
         return op
 
 

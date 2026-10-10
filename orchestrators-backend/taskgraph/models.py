@@ -17,6 +17,11 @@ TaskKind = Literal["start", "task", "decision", "end"]
 RelationType = Literal["blocks", "related"]
 Autonomy = Literal["auto", "ask-structural", "ask-all"]
 ChangesetStatus = Literal["applied", "proposed", "rejected"]
+# running: work in progress. succeeded/failed: the run ended (exit code or a
+# reported outcome). stopped: someone stopped it. lost: its process went away
+# while nobody was watching, so the outcome is unknown.
+RunStatus = Literal["running", "succeeded", "failed", "stopped", "lost"]
+ACTIVE_RUN_STATUSES = frozenset({"running"})
 
 
 class Model(BaseModel):
@@ -254,6 +259,39 @@ class Changeset(Model):
     reviewed_by: Actor | None = None
     reviewed_at: str | None = None
     review_note: str | None = None
+
+
+class AgentRun(Model):
+    """One attempt by an agent to work on a task (see runs.py).
+
+    Recorded in the event log like everything else, so every process sharing
+    the log sees the same runs. `runner` says what executes it: "record" means
+    nothing is launched (an external worker reports back via finish_run),
+    "subprocess" means a local process with `pid` on `host`.
+    """
+
+    id: str
+    task_id: str
+    agent: Actor
+    status: RunStatus = "running"
+    runner: str = "record"
+    attempt: int = 1
+    restart_of: str | None = None
+    instructions: str | None = None
+    started_by: Actor
+    started_at: str
+    reason: str | None = None
+    ended_at: str | None = None
+    ended_by: Actor | None = None
+    exit_code: int | None = None
+    note: str | None = None
+    pid: int | None = None
+    host: str | None = None
+    log_path: str | None = None
+
+    @property
+    def active(self) -> bool:
+        return self.status in ACTIVE_RUN_STATUSES
 
 
 class ProjectSettings(Model):

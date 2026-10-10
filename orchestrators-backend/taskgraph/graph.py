@@ -12,6 +12,7 @@ from pydantic import TypeAdapter
 
 from .models import (
     ActivityItem,
+    AgentRun,
     Changeset,
     DecisionInfo,
     Edge,
@@ -40,6 +41,7 @@ class GraphState:
     settings: ProjectSettings = field(default_factory=ProjectSettings)
     tasks: dict[str, Task] = field(default_factory=dict)
     changesets: dict[str, Changeset] = field(default_factory=dict)
+    runs: dict[str, AgentRun] = field(default_factory=dict)
     events: list[Event] = field(default_factory=list)
 
     def copy(self) -> "GraphState":
@@ -48,10 +50,18 @@ class GraphState:
             settings=self.settings.model_copy(deep=True),
             tasks={k: v.model_copy(deep=True) for k, v in self.tasks.items()},
             changesets={k: v.model_copy(deep=True) for k, v in self.changesets.items()},
+            runs={k: v.model_copy(deep=True) for k, v in self.runs.items()},
             events=list(self.events),
         )
 
     # ---- derived views -------------------------------------------------
+
+    def active_run(self, task_id: str) -> AgentRun | None:
+        """The run currently working on `task_id` (at most one)."""
+        for run in self.runs.values():
+            if run.task_id == task_id and run.active:
+                return run
+        return None
 
     def edges(self) -> list[Edge]:
         out: list[Edge] = []
@@ -117,6 +127,21 @@ def apply_event(state: GraphState, ev: Event) -> None:
             cs.reviewed_by = ev.actor
             cs.reviewed_at = ev.ts
             cs.review_note = p.get("note")
+    elif t == "run.started":
+        run = AgentRun.model_validate(p)
+        state.runs[run.id] = run
+    elif t == "run.updated":
+        run = state.runs[p["runId"]]
+        for key, attr in (("pid", "pid"), ("host", "host"), ("logPath", "log_path")):
+            if key in p:
+                setattr(run, attr, p[key])
+    elif t == "run.ended":
+        run = state.runs[p["runId"]]
+        run.status = p["status"]
+        run.exit_code = p.get("exitCode")
+        run.note = p.get("note")
+        run.ended_at = ev.ts
+        run.ended_by = ev.actor
     else:
         _apply_op(state, parse_op(p), ev)
 

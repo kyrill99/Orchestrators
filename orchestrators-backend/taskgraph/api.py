@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from .models import Actor, Autonomy, Model, Op
@@ -78,6 +78,11 @@ def build_router(service: TaskGraphService) -> APIRouter:
     @r.get("/changesets")
     def changesets(status: Literal["applied", "proposed", "rejected"] | None = None):
         return call(service.changesets, status)
+
+    @r.get("/runs")
+    def runs(task_id: str | None = Query(None, alias="taskId"), active: bool | None = None):
+        """Agent runs (who is working on what); started and stopped over MCP."""
+        return [run.dump() for run in call(service.runs, task_id=task_id, active=active)]
 
     @r.post("/changes")
     def submit(body: SubmitBody):
