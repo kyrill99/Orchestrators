@@ -3,12 +3,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ArrowUp,
+  AudioLines,
   Box,
   ChevronDown,
   ClipboardList,
   Loader2,
-  Mic,
-  MicOff,
   Paperclip,
   Search,
   Target,
@@ -20,13 +19,16 @@ import {
   type AgentExample,
   type ChatMessage,
 } from "@/lib/fixtures";
-import { sendAgentMessage } from "@/lib/api";
-import { startSttSession, type SttSession } from "@/lib/gradium/stt-session";
-import { speakText } from "@/lib/gradium/tts-session";
+import { sendAgentMessage, type AgentMode } from "@/lib/api";
+import {
+  VOICE_OPENERS,
+  VoiceConversation,
+} from "@/lib/gradium/voice-conversation";
+import { VoiceMode } from "@/components/agent/voice-mode";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
-type Mode = "welcome" | "interview";
+type Mode = "welcome" | "interview" | "voice";
 
 const exampleIcons = {
   "ex-objective": Target,
@@ -38,35 +40,43 @@ export function AgentPage() {
   const [mode, setMode] = useState<Mode>("welcome");
   const [messages, setMessages] = useState<ChatMessage[]>(seedMessages);
   const [draft, setDraft] = useState("");
-  const [listening, setListening] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [voice, setVoice] = useState<VoiceConversation | null>(null);
   const interactionIdRef = useRef<string | null>(null);
-  const sttRef = useRef<SttSession | null>(null);
-  const transcriptBaseRef = useRef("");
-  const spokenRef = useRef("");
-  const draftRef = useRef(draft);
+  const voiceRef = useRef<VoiceConversation | null>(null);
   const submittingRef = useRef(false);
 
   useEffect(() => {
-    draftRef.current = draft;
-  }, [draft]);
-
-  const stopListening = useCallback(async () => {
-    const session = sttRef.current;
-    sttRef.current = null;
-    setListening(false);
-    if (session) await session.stop();
+    return () => voiceRef.current?.end();
   }, []);
 
-  useEffect(() => {
-    return () => {
-      void sttRef.current?.stop();
-    };
-  }, []);
+  /** One agent turn; the reply (and the owner's message, if shown) lands in the chat. */
+  const callAgent = useCallback(
+    async (text: string, mode: AgentMode, { showOwner }: { showOwner: boolean }) => {
+      if (showOwner) {
+        setMessages((prev) => [
+          ...prev,
+          { id: `u-${Date.now()}`, role: "user", content: text },
+        ]);
+      }
+      const { reply, interaction_id } = await sendAgentMessage(
+        text,
+        interactionIdRef.current,
+        mode,
+      );
+      interactionIdRef.current = interaction_id;
+      setMessages((prev) => [
+        ...prev,
+        { id: `a-${Date.now()}`, role: "agent", content: reply },
+      ]);
+      return reply;
+    },
+    [],
+  );
 
   const submitMessage = useCallback(
-    async (raw: string, { speak }: { speak: boolean }) => {
+    async (raw: string) => {
       const text = raw.trim();
       if (!text || submittingRef.current) return;
 
@@ -74,33 +84,10 @@ export function AgentPage() {
       setBusy(true);
       setError(null);
       setDraft("");
-      draftRef.current = "";
-      transcriptBaseRef.current = "";
-      spokenRef.current = "";
-
-      const userMessage: ChatMessage = {
-        id: `u-${Date.now()}`,
-        role: "user",
-        content: text,
-      };
-      setMessages((prev) => [...prev, userMessage]);
       setMode("interview");
 
       try {
-        const { reply, interaction_id } = await sendAgentMessage(
-          text,
-          interactionIdRef.current,
-        );
-        interactionIdRef.current = interaction_id;
-        const agentMessage: ChatMessage = {
-          id: `a-${Date.now()}`,
-          role: "agent",
-          content: reply,
-        };
-        setMessages((prev) => [...prev, agentMessage]);
-        if (speak) {
-          await speakText(reply);
-        }
+        await callAgent(text, "text", { showOwner: true });
       } catch (err) {
         setError(err instanceof Error ? err.message : "Something went wrong");
       } finally {
@@ -108,73 +95,45 @@ export function AgentPage() {
         setBusy(false);
       }
     },
-    [],
+    [callAgent],
   );
 
-  const toggleMic = useCallback(async () => {
-    if (listening) {
-      await stopListening();
-      return;
-    }
-
+  const startVoice = useCallback(() => {
+    if (voiceRef.current) return;
+    // Created inside the click, so the browser lets the agent's voice play.
+    const conversation = new VoiceConversation({
+      open: () =>
+        callAgent(
+          interactionIdRef.current ? VOICE_OPENERS.resume : VOICE_OPENERS.start,
+          "voice",
+          { showOwner: false },
+        ),
+      reply: (text) => callAgent(text, "voice", { showOwner: true }),
+    });
+    voiceRef.current = conversation;
+    setVoice(conversation);
     setError(null);
+    setMode("voice");
+    void conversation.start();
+  }, [callAgent]);
+
+  const endVoice = useCallback(() => {
+    voiceRef.current?.end();
+    voiceRef.current = null;
+    setVoice(null);
     setMode("interview");
-    transcriptBaseRef.current = draftRef.current.trim();
-    spokenRef.current = "";
-
-    try {
-      const session = await startSttSession({
-        onPartial: (segment) => {
-          const piece = segment.trim();
-          if (!piece) return;
-          spokenRef.current = spokenRef.current
-            ? `${spokenRef.current} ${piece}`
-            : piece;
-          const base = transcriptBaseRef.current;
-          const next = base
-            ? `${base} ${spokenRef.current}`.trim()
-            : spokenRef.current;
-          draftRef.current = next;
-          setDraft(next);
-        },
-        onTurnEnd: () => {
-          void (async () => {
-            await stopListening();
-            const value = draftRef.current.trim();
-            if (value) await submitMessage(value, { speak: true });
-          })();
-        },
-        onError: (err) => {
-          setError(err.message);
-          setListening(false);
-          sttRef.current = null;
-        },
-      });
-      sttRef.current = session;
-      setListening(true);
-    } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : "Microphone or Gradium connection failed",
-      );
-      setListening(false);
-    }
-  }, [listening, stopListening, submitMessage]);
-
-  const handleSend = useCallback(async () => {
-    if (listening) await stopListening();
-    await submitMessage(draft, { speak: false });
-  }, [draft, listening, stopListening, submitMessage]);
+  }, []);
 
   const resetChat = useCallback(() => {
-    void stopListening();
+    voiceRef.current?.end();
+    voiceRef.current = null;
+    setVoice(null);
     interactionIdRef.current = null;
     setMessages(seedMessages);
     setDraft("");
     setError(null);
     setMode("welcome");
-  }, [stopListening]);
+  }, []);
 
   return (
     <div className="flex h-full flex-col overflow-hidden bg-background">
@@ -191,19 +150,20 @@ export function AgentPage() {
 
       <div className="min-h-0 flex-1 overflow-auto">
         <div className="mx-auto flex min-h-full max-w-2xl flex-col px-6 pb-10 pt-6 sm:pt-16">
-          {mode === "welcome" ? (
+          {mode === "voice" && voice ? (
+            <VoiceMode conversation={voice} onEnd={endVoice} />
+          ) : mode === "welcome" ? (
             <Welcome
               draft={draft}
               setDraft={setDraft}
-              listening={listening}
               busy={busy}
               error={error}
-              onMic={toggleMic}
-              onSend={handleSend}
+              onVoice={startVoice}
+              onSend={() => void submitMessage(draft)}
               onFocus={() => setMode("interview")}
               onExample={(example) => {
                 setMode("interview");
-                void submitMessage(example.description, { speak: false });
+                void submitMessage(example.description);
               }}
               onRecent={() => setMode("interview")}
             />
@@ -212,11 +172,10 @@ export function AgentPage() {
               messages={messages}
               draft={draft}
               setDraft={setDraft}
-              listening={listening}
               busy={busy}
               error={error}
-              onMic={toggleMic}
-              onSend={handleSend}
+              onVoice={startVoice}
+              onSend={() => void submitMessage(draft)}
               onNewChat={resetChat}
             />
           )}
@@ -229,10 +188,9 @@ export function AgentPage() {
 function Welcome({
   draft,
   setDraft,
-  listening,
   busy,
   error,
-  onMic,
+  onVoice,
   onSend,
   onFocus,
   onExample,
@@ -240,10 +198,9 @@ function Welcome({
 }: {
   draft: string;
   setDraft: (value: string) => void;
-  listening: boolean;
   busy: boolean;
   error: string | null;
-  onMic: () => void;
+  onVoice: () => void;
   onSend: () => void;
   onFocus: () => void;
   onExample: (example: AgentExample) => void;
@@ -257,17 +214,16 @@ function Welcome({
         </h1>
         <p className="mt-2 text-[13px] text-muted-foreground">
           I’ll interview you about goals, priorities, and success — never
-          implementation details. Use the mic for voice mode.
+          implementation details. Type, or switch to voice and talk it through.
         </p>
       </div>
 
       <Composer
         draft={draft}
         setDraft={setDraft}
-        listening={listening}
         busy={busy}
         error={error}
-        onMic={onMic}
+        onVoice={onVoice}
         onSend={onSend}
         onFocus={onFocus}
       />
@@ -332,20 +288,18 @@ function Interview({
   messages,
   draft,
   setDraft,
-  listening,
   busy,
   error,
-  onMic,
+  onVoice,
   onSend,
   onNewChat,
 }: {
   messages: ChatMessage[];
   draft: string;
   setDraft: (value: string) => void;
-  listening: boolean;
   busy: boolean;
   error: string | null;
-  onMic: () => void;
+  onVoice: () => void;
   onSend: () => void;
   onNewChat: () => void;
 }) {
@@ -389,10 +343,9 @@ function Interview({
       <Composer
         draft={draft}
         setDraft={setDraft}
-        listening={listening}
         busy={busy}
         error={error}
-        onMic={onMic}
+        onVoice={onVoice}
         onSend={onSend}
       />
     </>
@@ -402,19 +355,17 @@ function Interview({
 function Composer({
   draft,
   setDraft,
-  listening,
   busy,
   error,
-  onMic,
+  onVoice,
   onSend,
   onFocus,
 }: {
   draft: string;
   setDraft: (value: string) => void;
-  listening: boolean;
   busy: boolean;
   error: string | null;
-  onMic: () => void;
+  onVoice: () => void;
   onSend: () => void;
   onFocus?: () => void;
 }) {
@@ -422,12 +373,7 @@ function Composer({
 
   return (
     <div>
-      <div
-        className={cn(
-          "rounded-2xl border bg-background shadow-[0_1px_2px_rgba(0,0,0,0.04)]",
-          listening ? "border-[#5E6AD2]" : "border-border",
-        )}
-      >
+      <div className="rounded-2xl border border-border bg-background shadow-[0_1px_2px_rgba(0,0,0,0.04)]">
         <textarea
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
@@ -438,11 +384,7 @@ function Composer({
               if (canSend) onSend();
             }
           }}
-          placeholder={
-            listening
-              ? "Listening… speak naturally"
-              : "Ask about goals, priorities, or what success looks like…"
-          }
+          placeholder="Ask about goals, priorities, or what success looks like…"
           aria-label="Ask the agent"
           disabled={busy}
           className="min-h-[88px] w-full resize-none bg-transparent px-4 pt-3.5 pb-2 text-[14px] outline-none placeholder:text-muted-foreground disabled:opacity-60"
@@ -471,20 +413,13 @@ function Composer({
             <Button
               type="button"
               variant="ghost"
-              size="icon-sm"
-              onClick={onMic}
+              size="sm"
+              onClick={onVoice}
               disabled={busy}
-              aria-label={listening ? "Stop listening" : "Start voice mode"}
-              aria-pressed={listening}
-              className={cn(
-                listening && "bg-red-50 text-red-600 hover:bg-red-50 hover:text-red-700",
-              )}
+              className="gap-1.5 text-muted-foreground"
             >
-              {listening ? (
-                <MicOff className="size-3.5" />
-              ) : (
-                <Mic className="size-3.5" />
-              )}
+              <AudioLines className="size-3.5" />
+              Voice
             </Button>
             <Button
               type="button"
@@ -506,11 +441,6 @@ function Composer({
       {error && (
         <p className="mt-2 text-xs text-red-600" role="alert">
           {error}
-        </p>
-      )}
-      {listening && (
-        <p className="mt-2 text-xs text-muted-foreground">
-          Voice mode on — pause to send, or click the mic to stop.
         </p>
       )}
     </div>

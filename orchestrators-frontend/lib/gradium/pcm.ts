@@ -38,11 +38,3 @@ export function pcmInputFormat(sampleRate: number): string {
   if (rounded > 16000) return "pcm_22050";
   return "pcm_16000";
 }
-
-export function pcmOutputSampleRate(format: string): number {
-  if (format === "pcm" || format === "pcm_48000") return 48000;
-  if (format === "pcm_24000") return 24000;
-  if (format === "pcm_16000") return 16000;
-  if (format === "pcm_44100") return 44100;
-  return 48000;
-}

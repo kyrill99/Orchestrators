@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -36,6 +38,7 @@ app.add_middleware(
 class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1)
     previous_interaction_id: str | None = None
+    mode: Literal["text", "voice"] = "text"
 
 
 class ChatResponse(BaseModel):
@@ -60,6 +63,7 @@ def agent_chat_endpoint(body: ChatRequest):
     return agent_chat(
         body.message,
         previous_interaction_id=body.previous_interaction_id,
+        mode=body.mode,
     )
 
 

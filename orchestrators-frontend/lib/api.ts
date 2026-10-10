@@ -30,9 +30,13 @@ export async function fetchGradiumToken(): Promise<GradiumToken> {
   return response.json();
 }
 
+/** "voice" asks for short, speakable replies with less thinking time. */
+export type AgentMode = "text" | "voice";
+
 export async function sendAgentMessage(
   message: string,
   previousInteractionId?: string | null,
+  mode: AgentMode = "text",
 ): Promise<AgentChatResponse> {
   const response = await fetch(`${apiBaseUrl()}/api/agent/chat`, {
     method: "POST",
@@ -40,6 +44,7 @@ export async function sendAgentMessage(
     body: JSON.stringify({
       message,
       previous_interaction_id: previousInteractionId || undefined,
+      mode,
     }),
   });
   if (!response.ok) {
