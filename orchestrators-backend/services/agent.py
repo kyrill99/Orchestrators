@@ -99,15 +99,17 @@ def instructions(mode: Mode) -> str:
     )
 
 
-def _opening_context() -> str:
-    """What memory and the task graph already hold, for a conversation's first turn."""
-    if _tools is None:
+def _opening_context(tools: AgentTools | None = None) -> str:
+    """What memory (for this owner) and the task graph already hold, for a
+    conversation's first turn."""
+    tools = tools or _tools
+    if tools is None:
         return ""
     try:
-        memory = _tools.memory.context(
-            project_id=_tools.project_id, user_id=_tools.user_id
-        )["text"]
-        graph = _tools.taskgraph.graph()
+        memory = tools.memory_context()
+        if memory:
+            memory = f"{MEMORY_NOTE}\n\n{memory}"
+        graph = tools.taskgraph.graph()
     except Exception:  # noqa: BLE001 — context is a bonus; never block the chat
         log.warning("could not load opening context", exc_info=True)
         return ""
@@ -199,8 +201,9 @@ def chat(
     if not text:
         raise HTTPException(status_code=400, detail="message is required")
 
+    agent_tools = _tools.for_user(user) if _tools is not None and user else _tools
     if not previous_interaction_id:
-        context = _opening_context()
+        context = _opening_context(agent_tools)
         if context:
             text = (
                 f"[What Orchestrators already knows]\n{context}\n"
@@ -208,17 +211,12 @@ def chat(
             )
 
     client = _client()
-    agent_tools = _tools.for_user(user) if _tools is not None and user else _tools
     tools = agent_tools.declarations() if agent_tools is not None else None
     kwargs: dict[str, Any] = {
         "model": MODEL,
         "input": text,
         "system_instruction": instructions(mode),
     }
-    if agent_tools is not None and not previous_interaction_id:
-        known = agent_tools.memory_context()
-        if known:
-            kwargs["input"] = f"[{MEMORY_NOTE}\n\n{known}]\n\n{text}"
     if tools:
         kwargs["tools"] = tools
     if mode == "voice":
