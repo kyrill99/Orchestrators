@@ -17,6 +17,7 @@ import { AgentActivity } from "@/components/task/agent-activity";
 import { RunControl } from "@/components/task/run-control";
 import { StatusPicker } from "@/components/task/status-picker";
 import { ScratchpadPanel } from "@/components/task/scratchpad-panel";
+import { TaskArtifacts } from "@/components/task/task-artifacts";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { HereLine, TypingLine } from "@/components/presence/presence";
@@ -240,6 +241,7 @@ export function TaskIssuePage({ id }: { id: string }) {
           <div className="mt-4">
             <OwnerActions taskId={task.id} />
           </div>
+          <TaskArtifacts taskId={task.id} inReview={task.status === "in-review"} />
           {task.description && !editing ? (
             <p className="mt-3 whitespace-pre-wrap text-[13px] leading-relaxed text-muted-foreground">
               {task.description}

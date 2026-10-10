@@ -363,3 +363,27 @@ export function setEngine(
     },
   );
 }
+
+// ---- task artifacts: files agents save on a task (orchestrators-backend/artifacts.py) ----
+
+export type TaskArtifactFile = {
+  id: string;
+  taskId: string;
+  runId: string | null;
+  filename: string;
+  kind: "html" | "markdown" | "json" | "csv" | "text" | "svg";
+  contentType: string;
+  size: number;
+  title: string;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+  /** Rendered inline and sandboxed (CSP sandbox, opaque origin); relative to apiBaseUrl(). */
+  viewUrl: string;
+  downloadUrl: string;
+};
+
+/** A task's artifacts in the current project, oldest first. */
+export function fetchTaskArtifacts(taskId: string): Promise<TaskArtifactFile[]> {
+  return request(`/api/artifacts?task_id=${encodeURIComponent(taskId)}`);
+}
