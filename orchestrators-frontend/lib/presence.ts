@@ -2,6 +2,7 @@
 
 import { useEffect, useSyncExternalStore } from "react";
 import { apiBaseUrl, fetchMe } from "@/lib/api";
+import { DEFAULT_PROJECT_ID, getCurrentProjectId } from "@/lib/projects";
 
 /**
  * Ephemeral teammate presence (see orchestrators-backend/presence.py).
@@ -20,6 +21,8 @@ export type PresenceEntry = {
   typing: boolean;
   conversation_id: string | null;
   updated_at: number;
+  /** Project id the teammate has open (missing = "default"). */
+  project?: string;
 };
 
 type Mine = { where: string; typing: boolean; conversationId: string | null };
@@ -46,7 +49,11 @@ let meRequested = false;
 const listeners = new Set<() => void>();
 
 function rebuild() {
-  const others = entries.filter((e) => e.email !== myEmail);
+  const projectId = getCurrentProjectId();
+  const others = entries.filter(
+    (e) =>
+      e.email !== myEmail && (e.project || DEFAULT_PROJECT_ID) === projectId,
+  );
   snapshot = { others, conversationId: mine.conversationId };
   listeners.forEach((listener) => listener());
 }

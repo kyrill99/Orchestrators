@@ -3,6 +3,7 @@
 import dynamic from "next/dynamic";
 import { useState } from "react";
 import { TimelineView } from "@/components/timeline/timeline-view";
+import { ProjectBrief } from "@/components/project/project-brief";
 import { cn } from "@/lib/utils";
 
 const TaskGraph = dynamic(
@@ -40,6 +41,7 @@ export function ProjectWorkspace() {
             label="Timeline"
           />
         </div>
+        <ProjectBrief />
       </div>
 
       <div className="min-h-0 flex-1">
