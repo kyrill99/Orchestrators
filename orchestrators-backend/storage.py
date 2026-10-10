@@ -196,8 +196,12 @@ def main(argv: list[str]) -> int:
         print(backup(argv[1]))
         return 0
     if argv == ["info"]:
-        for k, v in info(Database()).items():
-            print(f"{k}: {v}")
+        db = Database()
+        try:
+            for k, v in info(db).items():
+                print(f"{k}: {v}")
+        finally:
+            db.close()
         return 0
     print(usage, file=sys.stderr)
     return 2

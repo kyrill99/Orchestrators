@@ -32,24 +32,42 @@ See [`.env.example`](.env.example). Required / expected keys:
 | `DATABASE_PATH` | Shared SQLite file (default `data/orchestrators.db`) |
 | `TASKGRAPH_STORE` | `sqlite` (default) or `jsonl` |
 | `MEMORY_STORE` | `sqlite` (default) or `markdown` |
-| `TASKGRAPH_PATH` | JSONL log; also one-time import source into SQLite |
-| `MEMORY_PATH` | Markdown memory dir; also one-time import source into SQLite |
+| `TASKGRAPH_PATH` | JSONL event log: used with `TASKGRAPH_STORE=jsonl`, imported once otherwise (default `data/taskgraph.jsonl`) |
+| `MEMORY_PATH` | Markdown memory folder: used with `MEMORY_STORE=markdown`, imported once otherwise (default `data/memory`) |
+| `DEV_USER_EMAIL` | Signed-in user when there is no oauth2-proxy in front (optional, default `local@localhost`) |
 | `CORS_ORIGINS` | Origins allowed to call the API (optional, default `http://localhost:3000`) |
 
 Never commit `.env`.
 
 ## Persistence (SQLite)
 
-By default the task graph and memory live in one SQLite file (`DATABASE_PATH`), shared by the FastAPI process and MCP servers (WAL mode). Legacy JSONL/markdown backends remain selectable via `TASKGRAPH_STORE` / `MEMORY_STORE`.
+Everything the backend keeps lives in one SQLite file (`DATABASE_PATH`, WAL mode,
+shared by the FastAPI process and the MCP servers). Stores are built in
+`storage.py` (`open_taskgraph_store`, `open_memory_store`); the old JSONL /
+markdown stores stay selectable via `TASKGRAPH_STORE` / `MEMORY_STORE`.
 
-On first SQLite start, existing `TASKGRAPH_PATH` / `MEMORY_PATH` data is imported once (recorded in `storage_imports`; source files are left in place).
+| Table | Contents |
+| --- | --- |
+| `taskgraph_events` | Every task graph update, in order (`seq`); the graph is replayed from it on start |
+| `memories`, `memory_log` | Memories (full JSON in `data`) and what happened to them |
+| `users`, `user_state` | Who signed in (first/last seen) and per-user JSON values |
+| `storage_imports` | Which JSONL / markdown sources were imported, and when |
+
+On first start with the SQLite backends, an existing `TASKGRAPH_PATH` file and
+`MEMORY_PATH` folder are imported once. The import only runs into empty tables
+and is recorded in `storage_imports`, so restarts never duplicate data. The
+original files are left in place but are no longer updated. Missing files are skipped.
 
 ```bash
-.venv/bin/python -m storage info              # row counts + imports
-.venv/bin/python -m storage backup backups/   # online consistent copy
+.venv/bin/python -m storage info              # row counts per table, imports done
+.venv/bin/python -m storage backup backups/   # consistent copy while the app runs (online backup API);
+                                              # a directory gets orchestrators-<UTC time>.db
 ```
 
-Per-user state (`GET/PUT /api/me/state/...`) also uses the same database.
+Back up with `python -m storage backup`, not `cp`: copying the `.db` file alone
+can miss recent writes that are still in the `-wal` file. To restore, stop the
+app, put the backup at `DATABASE_PATH`, and delete any `-wal` / `-shm` files
+next to it.
 
 ## Run
 
@@ -69,7 +87,8 @@ API docs (when the FastAPI app is running): [http://localhost:8000/docs](http://
 | --- | --- | --- |
 | `GET` | `/health` | Liveness |
 | `GET` | `/api/me` | Signed-in user (oauth2-proxy header or `DEV_USER_EMAIL`) |
-| `GET/PUT/DELETE` | `/api/me/state/...` | Per-user JSON preferences |
+| `GET` | `/api/me/state` | All of the user's stored values, `{key: value}` |
+| `GET` / `PUT` / `DELETE` | `/api/me/state/{key}` | One per-user JSON value (PUT body is any JSON, max 64 KB; keys `A-Za-z0-9_.:-`, max 128 chars) |
 | `POST` | `/api/voice/token` | Mint a short-lived Gradium WebSocket token (STT/TTS) |
 | `POST` | `/api/agent/chat` | Strategy agent reply via Gemini (`message`, optional `previous_interaction_id`) |
 
