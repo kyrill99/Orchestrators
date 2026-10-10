@@ -1,7 +1,7 @@
 "use client";
 
 import { Handle, Position, type NodeProps } from "@xyflow/react";
-import { Bot } from "lucide-react";
+import { Bot, FileText } from "lucide-react";
 import { getAssignee, type AssigneeId } from "@/lib/assignees";
 import { StatusBadge } from "@/components/task/status-badge";
 import { StatusIcon } from "@/components/task/status-icon";
@@ -19,7 +19,68 @@ export type GraphNodeData = {
   assigneeId?: AssigneeId;
   /** Agent with an active run on this task (live backend graph). */
   agent?: string;
+  /** Latest version of each artifact saved on this task. */
+  artifacts?: GraphNodeArtifact[];
 };
+
+export type GraphNodeArtifact = {
+  id: string;
+  filename: string;
+  title: string;
+  /** Absolute URL that renders the artifact (sandboxed). */
+  viewUrl: string;
+  version: number;
+};
+
+const MAX_ARTIFACT_ICONS = 3;
+
+function stopEvent(event: { stopPropagation: () => void }) {
+  event.stopPropagation();
+}
+
+/** Small clickable file chips; open the artifact in a new tab without opening the task. */
+function NodeArtifacts({ artifacts }: { artifacts: GraphNodeArtifact[] }) {
+  if (artifacts.length === 0) return null;
+  const shown = artifacts.slice(0, MAX_ARTIFACT_ICONS);
+  const hidden = artifacts.slice(MAX_ARTIFACT_ICONS);
+  return (
+    <span className="inline-flex items-center gap-0.5">
+      {shown.map((artifact) => {
+        const label = artifact.title || artifact.filename;
+        const tip = `${label}${
+          label !== artifact.filename ? `\n${artifact.filename}` : ""
+        } · v${artifact.version}`;
+        return (
+          <a
+            key={artifact.id}
+            href={artifact.viewUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            title={tip}
+            aria-label={`Open artifact ${label} (v${artifact.version})`}
+            onClick={stopEvent}
+            onPointerDown={stopEvent}
+            onMouseDown={stopEvent}
+            onDoubleClick={stopEvent}
+            className="nodrag nopan inline-flex size-[18px] items-center justify-center rounded-[4px] text-muted-foreground transition-colors hover:bg-black/[0.05] hover:text-foreground"
+          >
+            <FileText className="size-3" strokeWidth={1.75} />
+          </a>
+        );
+      })}
+      {hidden.length > 0 ? (
+        <span
+          className="px-0.5 text-[10px] leading-none text-muted-foreground tabular-nums"
+          title={hidden
+            .map((a) => `${a.title || a.filename} · v${a.version}`)
+            .join("\n")}
+        >
+          +{hidden.length}
+        </span>
+      ) : null}
+    </span>
+  );
+}
 
 /**
  * Teammates who have this task open, as small avatars on the node corner.
@@ -94,6 +155,9 @@ function NodeMeta({ data }: { data: GraphNodeData }) {
         <span className="truncate">{statusLabel[data.status]}</span>
       </span>
       <span className="inline-flex shrink-0 items-center gap-1">
+        {data.artifacts && data.artifacts.length > 0 ? (
+          <NodeArtifacts artifacts={data.artifacts} />
+        ) : null}
         {data.agent ? (
           <span
             className="inline-flex items-center gap-1 rounded-full bg-[#5E6AD2]/10 px-1.5 py-px text-[10px] font-medium text-[#5E6AD2]"

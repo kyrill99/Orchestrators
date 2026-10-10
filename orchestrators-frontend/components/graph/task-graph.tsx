@@ -15,9 +15,18 @@ import {
   type NodeMouseHandler,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { nodeTypes, type GraphNodeData } from "@/components/graph/nodes";
+import {
+  nodeTypes,
+  type GraphNodeArtifact,
+  type GraphNodeData,
+} from "@/components/graph/nodes";
 import { ASSIGNEE_CHANGED_EVENT, loadAssignee } from "@/lib/assignees";
-import { fetchActiveRuns } from "@/lib/api";
+import {
+  apiBaseUrl,
+  fetchActiveRuns,
+  fetchProjectArtifacts,
+  type ProjectArtifactFile,
+} from "@/lib/api";
 import { layoutGraph } from "@/lib/taskgraph-api";
 import { useTaskGraph } from "@/lib/use-task-graph";
 import { setSelection } from "@/lib/presence";
@@ -30,6 +39,26 @@ const EDGE_LIVE = "#5E6AD2";
 const SMOOTH_PATH: { pathOptions: { borderRadius: number } } = {
   pathOptions: { borderRadius: 8 },
 };
+
+/** Latest version of each (task, filename), grouped by task, oldest first. */
+function groupArtifacts(
+  files: ProjectArtifactFile[],
+): Record<string, GraphNodeArtifact[]> {
+  const base = apiBaseUrl();
+  const byTask: Record<string, GraphNodeArtifact[]> = {};
+  for (const file of files) {
+    if (!file.latest) continue;
+    const list = byTask[file.taskId] ?? (byTask[file.taskId] = []);
+    list.push({
+      id: file.id,
+      filename: file.filename,
+      title: file.title,
+      viewUrl: `${base}${file.viewUrl}`,
+      version: file.version,
+    });
+  }
+  return byTask;
+}
 
 export function TaskGraph() {
   const router = useRouter();
@@ -47,6 +76,39 @@ export function TaskGraph() {
     };
   }, []);
 
+  /** Task id -> artifact chips; empty when the fetch fails. */
+  const [artifactsByTask, setArtifactsByTask] = useState<
+    Record<string, GraphNodeArtifact[]>
+  >({});
+  const graphSeq: number = data?.seq ?? 0;
+
+  useEffect(() => {
+    let cancelled = false;
+    let lastKey = "";
+    const refresh = () => {
+      fetchProjectArtifacts()
+        .then((files: ProjectArtifactFile[]) => {
+          if (cancelled) return;
+          const grouped = groupArtifacts(Array.isArray(files) ? files : []);
+          const key = JSON.stringify(grouped);
+          if (key === lastKey) return;
+          lastKey = key;
+          setArtifactsByTask(grouped);
+        })
+        .catch(() => {
+          if (cancelled || lastKey === "{}") return;
+          lastKey = "{}";
+          setArtifactsByTask({});
+        });
+    };
+    refresh();
+    const id = setInterval(refresh, 10000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [graphSeq]);
+
   const built = useMemo(() => {
     const tasks = data?.tasks ?? [];
     const edges = data?.edges ?? [];
@@ -61,6 +123,7 @@ export function TaskGraph() {
         kind: task.kind,
         status: task.status,
         assigneeId: loadAssignee(task.id),
+        artifacts: artifactsByTask[task.id],
         seq,
       } satisfies GraphNodeData & { seq: number },
     }));
@@ -89,7 +152,7 @@ export function TaskGraph() {
       };
     });
     return { nodes, edges: flowEdges, seq };
-  }, [data, assigneeTick]);
+  }, [data, assigneeTick, artifactsByTask]);
 
   const [nodes, setNodes, onNodesChange] = useNodesState(built.nodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(built.edges);
