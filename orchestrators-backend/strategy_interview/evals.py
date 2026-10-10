@@ -16,6 +16,8 @@ import statistics
 import sys
 from dataclasses import asdict, dataclass, field
 
+from dotenv import load_dotenv
+
 from .advisor import StrategyAdvisor, StrategyQuery
 from .interview import InterviewEngine
 from .llm import GeminiLLM, LLMError, StructuredLLM
@@ -223,7 +225,9 @@ def main(argv: list[str] | None = None, llm: StructuredLLM | None = None) -> int
     parser.add_argument("--out", default="eval_report.json")
     args = parser.parse_args(argv)
 
-    llm = llm or GeminiLLM()
+    if llm is None:
+        load_dotenv()  # GEMINI_API_KEY from orchestrators-backend/.env, as in main.py
+        llm = GeminiLLM()
     results = [run_persona(llm, p) for p in PERSONAS for _ in range(args.runs)]
     summary = summarize(results)
     with open(args.out, "w", encoding="utf-8") as fh:

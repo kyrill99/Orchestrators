@@ -62,6 +62,9 @@ orchestrators-backend/
   services/
     gradium.py       # Gradium browser token minting
     agent.py         # Gemini strategy chat
+  strategy_interview/  # objective interview & strategy picture (see its README)
+  orchestration/     # tool contract: teammates register tools, the workflow calls them
+  tests/             # offline tests for the two packages above
   requirements.txt
   .env.example
   README.md

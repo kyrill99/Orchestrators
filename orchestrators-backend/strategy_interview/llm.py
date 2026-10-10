@@ -106,6 +106,7 @@ class GeminiLLM:
     """``StructuredLLM`` backed by the Gemini API (``google-genai`` SDK).
 
     Reads ``GEMINI_API_KEY`` from the environment unless a client is passed in.
+    The CLI and the eval load it from ``orchestrators-backend/.env``, like ``main.py``.
     """
 
     def __init__(
@@ -132,6 +133,10 @@ class GeminiLLM:
                 self._client = genai.Client(http_options={"timeout": timeout_ms})
             except TypeError:  # older SDKs without http_options
                 self._client = genai.Client()
+            except ValueError as exc:  # no API key; retrying cannot fix it
+                raise LLMError(
+                    f"cannot create the Gemini client; is GEMINI_API_KEY set in orchestrators-backend/.env? ({exc})"
+                ) from exc
         return self._client
 
     def generate(

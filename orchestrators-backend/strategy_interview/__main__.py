@@ -10,6 +10,8 @@ import json
 import logging
 import sys
 
+from dotenv import load_dotenv
+
 from .brief import render_brief
 from .interview import InterviewEngine
 from .llm import GeminiLLM
@@ -25,6 +27,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING)
 
+    load_dotenv()  # GEMINI_API_KEY from orchestrators-backend/.env, as in main.py
     engine = InterviewEngine(GeminiLLM())
     turn = engine.start(args.project, args.owner, args.name)
     try:

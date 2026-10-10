@@ -112,6 +112,16 @@ class GeminiTests(unittest.TestCase):
             call(llm)
         self.assertEqual(len(interactions.calls), 3)
 
+    def test_missing_api_key_fails_fast(self):
+        from unittest import mock
+
+        sleeps = []
+        llm = GeminiLLM(ModelConfig(), sleep=sleeps.append)
+        with mock.patch("google.genai.Client", side_effect=ValueError("No API key")):
+            with self.assertRaisesRegex(LLMError, "GEMINI_API_KEY"):
+                call(llm)
+        self.assertEqual(sleeps, [])
+
     def test_models_come_from_env(self):
         import os
         from unittest import mock
