@@ -6,7 +6,8 @@ import {
   type TaskGraphSnapshot,
 } from "@/lib/taskgraph-api";
 
-const POLL_MS = 4000;
+// Short so status and agent badges follow runs promptly (SSE later).
+const POLL_MS = 2000;
 
 export function useTaskGraph() {
   const [data, setData] = useState<TaskGraphSnapshot | null>(null);

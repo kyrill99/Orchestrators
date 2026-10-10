@@ -110,7 +110,7 @@ export function TaskGraph() {
         );
       });
     refresh();
-    const id = setInterval(refresh, 5000);
+    const id = setInterval(refresh, 2000);
     return () => clearInterval(id);
   }, [setNodes]);
 

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
+import { EngineToggle } from "@/components/layout/engine-toggle";
 import { fetchTask, fetchTaskGraph } from "@/lib/taskgraph-api";
 import { ProjectSwitcher } from "@/components/layout/project-switcher";
 
@@ -78,6 +79,9 @@ export function TopBar() {
             <span className="text-muted-foreground">Memory</span>
           </>
         ) : null}
+      </div>
+      <div className="ml-auto shrink-0 pl-3">
+        <EngineToggle />
       </div>
     </header>
   );

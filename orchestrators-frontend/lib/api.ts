@@ -87,7 +87,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const text = await response.text();
     let detail = text;
     try {
-      detail = JSON.parse(text).detail ?? text;
+      const parsed = JSON.parse(text).detail;
+      // Task graph errors are {code, message, opIndex}.
+      detail = (typeof parsed === "object" && parsed?.message) || parsed || text;
     } catch {
       // plain-text error body
     }
@@ -212,4 +214,112 @@ export function postConversationMessage(
 /** Server-Sent Events: conversation, message, thinking, resync. */
 export function conversationStreamUrl(): string {
   return `${apiBaseUrl()}/api/conversations/stream`;
+}
+
+// ---- Agent runs: steps, scratchpad, engine ----------------------------------
+
+/** A run with how it ended (GET /tasks/{id}/runs). */
+export type RunRecord = AgentRun & {
+  endedAt?: string | null;
+  note?: string | null;
+  instructions?: string | null;
+};
+
+export type RunStepKind =
+  | "thinking"
+  | "message"
+  | "tool_call"
+  | "tool_result"
+  | "error"
+  | "status";
+
+export type RunStep = {
+  runId: string;
+  seq: number;
+  taskId: string;
+  at: string;
+  kind: RunStepKind;
+  payload: {
+    text?: string;
+    name?: string;
+    args?: unknown;
+    result?: string;
+    callId?: string | null;
+    isError?: boolean;
+    builtin?: boolean;
+    state?: string;
+    note?: string | null;
+    message?: string;
+    [key: string]: unknown;
+  };
+};
+
+export type RunStepsPage = {
+  run: RunRecord;
+  active: boolean;
+  steps: RunStep[];
+  next: number;
+};
+
+/** Every run of a task, oldest first. */
+export function fetchTaskRuns(taskId: string): Promise<RunRecord[]> {
+  return request(`/api/taskgraph/tasks/${encodeURIComponent(taskId)}/runs`);
+}
+
+/** Steps of a run after `after` (cursor for live polling). */
+export function fetchRunSteps(runId: string, after = 0): Promise<RunStepsPage> {
+  return request(
+    `/api/taskgraph/runs/${encodeURIComponent(runId)}/steps?after=${after}`,
+  );
+}
+
+export type Scratchpad = {
+  taskId: string;
+  content: string;
+  updatedAt: string | null;
+  updatedBy: string | null;
+};
+
+export function fetchScratchpad(taskId: string): Promise<Scratchpad> {
+  return request(`/api/taskgraph/tasks/${encodeURIComponent(taskId)}/scratchpad`);
+}
+
+export function saveScratchpad(taskId: string, content: string): Promise<Scratchpad> {
+  return request(
+    `/api/taskgraph/tasks/${encodeURIComponent(taskId)}/scratchpad`,
+    { method: "PUT", body: JSON.stringify({ content }) },
+  );
+}
+
+export type EngineStatus = {
+  state: "running" | "stopped";
+  running: boolean;
+  updatedAt: string | null;
+  updatedBy: string | null;
+  reason: string | null;
+  /** "gemini" runs agents; "record" cannot run the engine. */
+  runner: string;
+  maxRuns: number;
+  activeRuns: AgentRun[];
+  queue: { id: string; title: string }[];
+};
+
+export function fetchEngine(): Promise<EngineStatus> {
+  return request("/api/engine");
+}
+
+export function setEngine(
+  action: "start" | "stop",
+  options: { stopRuns?: boolean } = {},
+): Promise<EngineStatus> {
+  return request(
+    `/api/engine/${action}`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        reason: `${action} from the GUI`,
+        stopRuns: options.stopRuns ?? false,
+      }),
+    },
+  );
 }

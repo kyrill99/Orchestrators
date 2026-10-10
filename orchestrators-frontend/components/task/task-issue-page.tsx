@@ -12,8 +12,10 @@ import {
 import { fetchTask, setTaskStatus } from "@/lib/taskgraph-api";
 import { AssigneePicker } from "@/components/task/assignee-picker";
 import { OwnerActions } from "@/components/task/owner-actions";
+import { AgentActivity } from "@/components/task/agent-activity";
 import { RunControl } from "@/components/task/run-control";
 import { StatusPicker } from "@/components/task/status-picker";
+import { ScratchpadPanel } from "@/components/task/scratchpad-panel";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { HereLine, TypingLine } from "@/components/presence/presence";
@@ -42,6 +44,15 @@ export function TaskIssuePage({ id }: { id: string }) {
 
   useEffect(() => {
     let cancelled = false;
+    // Re-read quietly while the page is open: agents change status, progress
+    // and activity as they work.
+    const timer = window.setInterval(() => {
+      fetchTask(id)
+        .then((next) => {
+          if (!cancelled && next) setTask(next);
+        })
+        .catch(() => undefined);
+    }, 3000);
     void (async () => {
       setLoading(true);
       try {
@@ -71,6 +82,7 @@ export function TaskIssuePage({ id }: { id: string }) {
     })();
     return () => {
       cancelled = true;
+      window.clearInterval(timer);
     };
   }, [id]);
 
@@ -217,6 +229,13 @@ export function TaskIssuePage({ id }: { id: string }) {
               <AssigneePicker value={assignee} onChange={onAssigneeChange} />
             </div>
           </section>
+
+          {task.kind === "task" ? (
+            <>
+              <AgentActivity taskId={task.id} />
+              <ScratchpadPanel taskId={task.id} />
+            </>
+          ) : null}
 
           <section className="mt-8">
             <h2 className="mb-3 text-[13px] font-medium text-foreground">
