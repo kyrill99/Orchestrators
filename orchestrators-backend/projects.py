@@ -6,7 +6,6 @@ graph service / run manager of that project on every attribute access, so router
 and agent tools built for a single graph work per project unchanged.
 """
 
-from __future__ import annotations
 
 import contextvars
 import re

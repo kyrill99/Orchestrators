@@ -29,7 +29,19 @@ async function projectRequest<T>(path: string, init?: RequestInit): Promise<T> {
     const text = await response.text();
     let detail = text;
     try {
-      detail = JSON.parse(text).detail ?? text;
+      const raw: unknown = JSON.parse(text).detail;
+      if (typeof raw === "string") {
+        detail = raw;
+      } else if (Array.isArray(raw)) {
+        // FastAPI validation errors: [{loc, msg, ...}]
+        detail = raw
+          .map((e: { msg?: string; loc?: unknown[] }) =>
+            [Array.isArray(e.loc) ? e.loc.join(".") : "", e.msg ?? ""].filter(Boolean).join(": "),
+          )
+          .join("; ");
+      } else if (raw && typeof raw === "object" && "message" in raw) {
+        detail = String((raw as { message: unknown }).message);
+      }
     } catch {
       // plain-text error body
     }
