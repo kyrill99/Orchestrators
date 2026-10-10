@@ -304,6 +304,44 @@ export type EngineStatus = {
   maxRuns: number;
   activeRuns: AgentRun[];
   queue: { id: string; title: string }[];
+  /** Why the engine starts nothing (older backends omit it). */
+  waiting?: EngineWaiting;
+};
+
+export type EngineWaitingReason =
+  | "ask-all"
+  | "run-limit"
+  | "review"
+  | "decision"
+  | "proposal"
+  | "assigned-to-person"
+  | "needs-restart"
+  | "blocked";
+
+export type EngineWaiting = {
+  /** The main cause, or null when nothing waits. */
+  reason: EngineWaitingReason | null;
+  /** One line for people, e.g. "Waiting for your review: ...". */
+  summary: string;
+  /** The task to open first. */
+  focus: {
+    id: string;
+    title: string;
+    kind: "review" | "decision" | "assigned" | "restart";
+  } | null;
+  review: { id: string; title: string }[];
+  decisions: { id: string; title: string; question: string }[];
+  proposals: { id: string; reason: string | null }[];
+  blocked: {
+    id: string;
+    title: string;
+    blockedBy: { id: string; title: string; status: string }[];
+  }[];
+  /** Ready tasks the engine leaves alone because a person has them. */
+  assignedToPeople: { id: string; title: string; assignee: string }[];
+  needsRestart: { id: string; title: string; lastRun: string }[];
+  autonomy: string;
+  atRunLimit: boolean;
 };
 
 export function fetchEngine(): Promise<EngineStatus> {
