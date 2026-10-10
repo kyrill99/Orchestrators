@@ -542,7 +542,7 @@ function Interview({
               return (
                 <p
                   key={message.id}
-                  className="self-start truncate font-mono text-[11px] text-muted-foreground"
+                  className="max-w-full self-start truncate font-mono text-[11px] text-muted-foreground"
                   title={message.content}
                 >
                   ↳ {message.content}
