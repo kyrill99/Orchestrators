@@ -12,8 +12,10 @@ assigned to a person, have no active run, and
 
 A task whose last run failed or was stopped is not retried automatically: a
 human (or the planner) restarts it, so a failing task cannot loop. The
-exception is a run that stopped to ask the owner (request_decision): once the
-decision is answered, the task is queued again. A task that succeeded is
+exceptions: a run that stopped to ask the owner (request_decision) is queued
+again once the decision is answered, and a task a person sets to 'open' after
+its last run ended (succeeded, failed or stopped) is queued again: moving it
+back to open means "run it again". A task that succeeded is
 'in-review'; the owner approves it or sends it back (taskgraph/loop.py).
 
 `dispatch()` is the one way runs get started automatically: the engine loop
@@ -53,6 +55,23 @@ def _answered_since(task: dict[str, Any], run: AgentRun) -> bool:
     answered = decision.get("resolvedAt")
     return bool(decision.get("state") == "resolved" and answered and run.ended_at
                 and answered >= run.ended_at)
+
+
+def _reopened_since(service: TaskGraphService, run: AgentRun) -> bool:
+    """A person set the task to 'open' after `run` ended: "run it again".
+
+    Only deliberate status changes count (a human's changeset, after the
+    run.ended event), not the automatic move back to 'open' that ending a
+    failed or stopped run makes in the same write."""
+    if run.ended_at is None:
+        return False
+    for ev in reversed(service.state.events):  # newest first, back to the run's end
+        if ev.type == "run.ended" and ev.payload.get("runId") == run.id:
+            return False
+        if (ev.type == "task.set_status" and ev.actor.type == "human" and ev.changeset_id
+                and run.task_id in ev.task_ids and ev.payload.get("status") == "open"):
+            return True
+    return False
 
 
 def _assigned_to_person(task: dict[str, Any]) -> bool:
@@ -156,7 +175,8 @@ class Engine:
                 continue
             if history:
                 last = history[-1]
-                if last.status != "lost" and not _answered_since(task, last):
+                if last.status != "lost" and not _answered_since(task, last) \
+                        and not _reopened_since(self.service, last):
                     continue
                 lost_streak = 0
                 for r in reversed(history):
@@ -285,7 +305,8 @@ class Engine:
         if needs_restart:
             t = needs_restart[0]
             parts.append(("needs-restart", f"Not restarted automatically: {t['title']} "
-                                           f"(last run {t['lastRun']})"))
+                                           f"(last run {t['lastRun']}; restart it, or set it to "
+                                           f"open to queue it again)"))
         if not parts and blocked and not active and not queue:
             b = blocked[0]
             on = ", ".join(f"{w['title']} ({w['status']})" for w in b["blockedBy"])

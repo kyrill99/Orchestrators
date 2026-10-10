@@ -510,6 +510,34 @@ class EngineTest(Base):
         out = decide(svc, runs, H, "b", "recall", "quality first", engine=engine)
         self.assertEqual(out["started"], ["b"])
 
+    def test_setting_a_task_open_again_requeues_it(self):
+        gemini = Actor(type="agent", id="gemini")
+        ids = lambda: [q["id"] for q in self.engine.queue()]  # noqa: E731
+        runs = {r.task_id: r for r in self.engine.dispatch(H, "go")}  # t and u
+        # Succeeded -> in review; a person moves it back to open: run it again.
+        self.runs.finish(gemini, runs["t"].id, "succeeded", "done")
+        self.assertNotIn("t", ids())
+        self.svc.submit(H, [SetStatus(task_id="t", status="open")], "run it again")
+        self.assertIn("t", ids())
+        again = {r.task_id: r for r in self.engine.dispatch(H, "go")}
+        self.assertEqual(again["t"].attempt, 2)
+        # Stopped by a person: ending the run reopens the task, which is not a request.
+        self.runs.stop(H, again["t"].id, "pause")
+        self.assertEqual(self.svc.task("t")["status"], "open")
+        self.assertNotIn("t", ids())
+        w = self.engine.status()["waiting"]
+        self.assertIn("set it to open to queue it again", w["summary"])
+        self.assertIn("t", [n["id"] for n in w["needsRestart"]])
+        # Failed: still open, but setting it open again queues it.
+        self.runs.finish(gemini, runs["u"].id, "failed", "nope")
+        self.assertNotIn("u", ids())
+        self.svc.submit(H, [SetStatus(task_id="u", status="open")], "retry")
+        self.assertIn("u", ids())
+        self.assertNotIn("u", [n["id"] for n in self.engine.status()["waiting"]["needsRestart"]])
+        # An agent setting the status does not count.
+        self.svc.submit(gemini, [SetStatus(task_id="t", status="open")], "agent")
+        self.assertNotIn("t", ids())
+
     def test_background_loop_dispatches(self):
         self.engine.interval = 0.05
         self.engine.start_loop()
