@@ -6,6 +6,7 @@ import {
   type TaskActivity,
   type TaskComment,
 } from "@/lib/fixtures";
+import { RunControl } from "@/components/task/run-control";
 import { StatusBadge } from "@/components/task/status-badge";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -81,6 +82,11 @@ export function TaskIssuePage({ id }: { id: string }) {
             <span className="font-mono text-[11px] text-muted-foreground">
               {task.id}
             </span>
+            {task.kind === "task" ? (
+              <div className="ml-auto">
+                <RunControl taskId={task.id} />
+              </div>
+            ) : null}
           </div>
 
           <h1 className="text-[22px] leading-snug font-semibold tracking-[-0.02em] text-foreground">

@@ -1,6 +1,7 @@
 "use client";
 
 import { Handle, Position, type NodeProps } from "@xyflow/react";
+import { Bot } from "lucide-react";
 import { StatusBadge } from "@/components/task/status-badge";
 import type { TaskKind, TaskStatus } from "@/lib/fixtures";
 import { cn } from "@/lib/utils";
@@ -9,6 +10,8 @@ export type GraphNodeData = {
   title: string;
   kind: TaskKind;
   status: TaskStatus;
+  /** Agent with an active run on this task (live backend graph). */
+  agent?: string;
 };
 
 function NodeChrome({
@@ -39,8 +42,17 @@ function NodeChrome({
         {data.title}
       </p>
       {data.kind !== "start" ? (
-        <div className="mt-1.5">
+        <div className="mt-1.5 flex items-center justify-between gap-2">
           <StatusBadge status={data.status} />
+          {data.agent ? (
+            <span
+              className="inline-flex min-w-0 items-center gap-1 rounded-full bg-[#5E6AD2]/10 px-1.5 py-px text-[10px] font-medium text-[#5E6AD2]"
+              title={`Agent ${data.agent} is working on this task`}
+            >
+              <Bot className="size-3 shrink-0 animate-pulse" strokeWidth={1.75} />
+              <span className="truncate">{data.agent}</span>
+            </span>
+          ) : null}
         </div>
       ) : null}
       <Handle

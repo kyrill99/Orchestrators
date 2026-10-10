@@ -46,12 +46,16 @@ Humans' changes always apply. Humans approve/reject proposals.
 | `GET /activity?taskId=&since=` | activity feed |
 | `GET /events?since=` | raw events for live polling |
 | `GET /runs?taskId=&active=` | agent runs (who works on what) |
+| `POST /tasks/{id}/run/start` | `{actor, reason?, agentId?, instructions?}` → the run (agent defaults to `worker`) |
+| `POST /tasks/{id}/run/stop` | `{actor, reason?}` → the stopped run; 409 if the task has no active run |
+| `POST /tasks/{id}/run/restart` | `{actor, reason?, agentId?, instructions?}` → the new run (stops the active one first) |
 | `GET /changesets?status=` | changesets |
 | `POST /changes` | `{actor, ops[], reason, baseSeq?}` → `{changesetId, status, seq, createdIds}` |
 | `POST /changesets/{id}/review` | `{actor, approve, note}` |
 | `PATCH /settings` | `{actor, name?, autonomy?}` |
 
-Errors: `{code, message, opIndex}` with 404 not_found, 409 conflict, 403 forbidden, 422 invalid/blocked/cycle.
+Errors: `{code, message, opIndex}` with 404 not_found, 409 conflict, 403 forbidden, 422 invalid/blocked/cycle,
+500 runner (a run could not be launched).
 
 ## MCP tools (planner)
 
@@ -88,7 +92,8 @@ changes and runs live.
 A run is one attempt by an agent to work on a task. Runs are events in the same log
 (`run.started`, `run.updated`, `run.ended`), so every process sees them; `GET /graph`
 lists `activeRuns`, `GET /tasks/{id}` has `activeRun`, and `GET /runs?taskId=&active=`
-lists them. Runs are not changesets: the autonomy switch does not queue them, except
+lists them. The REST run endpoints and the MCP run tools call the same `RunManager`; the
+FastAPI app uses the runner from `TASKGRAPH_RUNNER` too. Runs are not changesets: the autonomy switch does not queue them, except
 that under `ask-all` only humans may start runs.
 
 - **start**: the task must be startable (not closed, blockers closed, no pending decision,

@@ -110,6 +110,36 @@ class RunsTest(unittest.TestCase):
         self.assertEqual(c.get("/api/taskgraph/runs", params={"taskId": "b"}).json(), [])
         self.assertEqual(c.get("/api/taskgraph/graph").json()["activeRuns"][0]["taskId"], "a")
 
+    def test_rest_start_stop_restart(self):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        from taskgraph.api import build_router
+
+        app = FastAPI()
+        app.include_router(build_router(self.svc, self.runs))
+        c = TestClient(app)
+        me = {"type": "human", "id": "lorenz"}
+        base = "/api/taskgraph/tasks"
+
+        r = c.post(f"{base}/a/run/start", json={"actor": me, "agentId": "coder"})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual((r.json()["agent"]["id"], r.json()["startedBy"]), ("coder", me))
+        self.assertEqual(c.get(f"/api/taskgraph/tasks/a").json()["activeRun"]["id"], r.json()["id"])
+        self.assertEqual(c.post(f"{base}/a/run/start", json={"actor": me}).status_code, 409)
+        self.assertEqual(c.post(f"{base}/b/run/start", json={"actor": me}).json()["detail"]["code"], "blocked")
+        self.assertEqual(c.post(f"{base}/nope/run/start", json={"actor": me}).status_code, 404)
+        agent = {"type": "agent", "id": "planner"}
+        self.assertEqual(c.post(f"{base}/a/run/stop", json={"actor": agent}).status_code, 422)  # no reason
+
+        r = c.post(f"{base}/a/run/restart", json={"actor": me, "reason": "retry"})
+        self.assertEqual((r.json()["attempt"], r.json()["agent"]["id"]), (2, "coder"))
+        r = c.post(f"{base}/a/run/stop", json={"actor": me, "reason": "pause"})
+        self.assertEqual(r.json()["status"], "stopped")
+        self.assertEqual(self.svc.task("a")["status"], "open")
+        self.assertEqual(c.post(f"{base}/a/run/stop", json={"actor": me}).status_code, 409)
+        self.assertEqual(c.post(f"{base}/nope/run/stop", json={"actor": me}).status_code, 404)
+
     def test_runs_survive_replay(self):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "g.jsonl")

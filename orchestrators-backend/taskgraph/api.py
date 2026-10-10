@@ -12,9 +12,10 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from .models import Actor, Autonomy, Model, Op
+from .runs import RunManager, runner_from_env
 from .service import TaskGraphError, TaskGraphService
 
-STATUS_FOR_CODE = {"not_found": 404, "conflict": 409, "forbidden": 403}
+STATUS_FOR_CODE = {"not_found": 404, "conflict": 409, "forbidden": 403, "runner": 500}
 
 
 class SubmitBody(Model):
@@ -30,14 +31,28 @@ class ReviewBody(Model):
     note: str | None = None
 
 
+class RunBody(Model):
+    actor: Actor
+    reason: str | None = None
+    agent_id: str | None = None
+    instructions: str | None = None
+
+
+class StopBody(Model):
+    actor: Actor
+    reason: str | None = None
+
+
 class SettingsBody(Model):
     actor: Actor
     name: str | None = None
     autonomy: Autonomy | None = None
 
 
-def build_router(service: TaskGraphService) -> APIRouter:
+def build_router(service: TaskGraphService, runs: RunManager | None = None) -> APIRouter:
+    """`runs` defaults to the runner configured by TASKGRAPH_RUNNER (see runs.py)."""
     r = APIRouter(prefix="/api/taskgraph", tags=["taskgraph"])
+    manager = runs if runs is not None else RunManager(service, runner_from_env())
 
     def call(fn, *a, **kw):
         try:
@@ -83,6 +98,27 @@ def build_router(service: TaskGraphService) -> APIRouter:
     def runs(task_id: str | None = Query(None, alias="taskId"), active: bool | None = None):
         """Agent runs (who is working on what); started and stopped over MCP."""
         return [run.dump() for run in call(service.runs, task_id=task_id, active=active)]
+
+    @r.post("/tasks/{task_id}/run/start")
+    def start_run(task_id: str, body: RunBody):
+        """Put an agent to work on the task (same rules as the MCP start_task)."""
+        return call(manager.start, body.actor, task_id, body.reason,
+                    agent_id=body.agent_id or "worker", instructions=body.instructions)
+
+    @r.post("/tasks/{task_id}/run/stop")
+    def stop_run(task_id: str, body: StopBody):
+        """Stop the task's active run; the task goes back to open."""
+        active = call(service.runs, task_id=task_id, active=True)
+        if not active:
+            call(service.task, task_id)  # 404 for an unknown task
+            raise HTTPException(409, {"code": "conflict", "message": f"'{task_id}' has no active run", "opIndex": None})
+        return call(manager.stop, body.actor, active[0].id, body.reason)
+
+    @r.post("/tasks/{task_id}/run/restart")
+    def restart_run(task_id: str, body: RunBody):
+        """Stop the active run (if any) and start the next attempt."""
+        return call(manager.restart, body.actor, task_id, body.reason,
+                    agent_id=body.agent_id, instructions=body.instructions)
 
     @r.post("/changes")
     def submit(body: SubmitBody):

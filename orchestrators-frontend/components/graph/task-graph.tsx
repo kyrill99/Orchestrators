@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback } from "react";
+import { useCallback, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import {
   Background,
@@ -15,6 +15,7 @@ import {
 import "@xyflow/react/dist/style.css";
 import { edges as fixtureEdges, tasks } from "@/lib/fixtures";
 import { nodeTypes, type GraphNodeData } from "@/components/graph/nodes";
+import { fetchActiveRuns } from "@/lib/api";
 
 const layout: Record<string, { x: number; y: number }> = {
   start: { x: 420, y: 0 },
@@ -48,8 +49,26 @@ const initialEdges: Edge[] = fixtureEdges.map((edge) => ({
 
 export function TaskGraph() {
   const router = useRouter();
-  const [nodes, , onNodesChange] = useNodesState(initialNodes);
+  const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
   const [edges, , onEdgesChange] = useEdgesState(initialEdges);
+
+  // Mark tasks an agent is working on (from the live backend graph).
+  useEffect(() => {
+    const refresh = () =>
+      fetchActiveRuns().then((runs) => {
+        const agentFor = new Map(runs.map((run) => [run.taskId, run.agent.id]));
+        setNodes((current) =>
+          current.map((node) => {
+            const agent = agentFor.get(node.id);
+            if ((node.data as GraphNodeData).agent === agent) return node;
+            return { ...node, data: { ...node.data, agent } };
+          }),
+        );
+      });
+    refresh();
+    const id = setInterval(refresh, 5000);
+    return () => clearInterval(id);
+  }, [setNodes]);
 
   const onNodeClick: NodeMouseHandler = useCallback(
     (_event, node) => {
