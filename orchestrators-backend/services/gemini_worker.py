@@ -87,8 +87,14 @@ sources (the pages google_search gave you, as links) and open questions.
 - Self-contained: inline CSS; no external images, fonts or stylesheets. The page cannot \
 fetch anything when viewed, so put all data in it. For charts prefer inline SVG or CSS \
 bars; at most one library from https://cdn.jsdelivr.net if you need it.
+- Concise: the owner should read it in under two minutes. Lead with the answer or \
+result in 2-3 sentences, then only what supports it. Aim for about 300-500 words; use \
+short bullets and one table instead of paragraphs; no filler, no restating the task, \
+no generic background, no repeating the same point in several sections. Put long \
+material (raw data, full text) in a collapsed <details> block or leave it out. Omit \
+empty sections (e.g. no "Open questions" if there are none).
 - Polished: clean typography, a readable column, tables for comparisons, light and dark \
-mode, print-friendly. Start from this skeleton and keep its style:
+mode, print-friendly. Keep the CSS small. Start from this skeleton and keep its style:
 
 ```html
 <!doctype html><html lang="en"><head><meta charset="utf-8">
