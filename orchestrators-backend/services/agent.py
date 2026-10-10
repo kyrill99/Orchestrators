@@ -3,33 +3,31 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
+from collections import Counter
+from collections.abc import Callable
 from typing import Any, Literal
 
 from fastapi import HTTPException
 from google import genai
 
+from agent_identity import system_prompt
 from services.agent_tools import AgentTools, result_as_text
+
+log = logging.getLogger("services.agent")
 
 MODEL = "gemini-3.8-flash"
 MAX_TOOL_ROUNDS = 8
 
 Mode = Literal["text", "voice"]
 
-# The character. Its writing rules follow The Economist's style guide: clarity first,
-# short words, short sentences, no jargon, never stuffy, chatty or pleased with itself.
-CHARACTER = """You are the strategy partner inside Orchestrators. Your job is to understand \
-what the owner of a project wants, so that agents can do the work without bothering them: \
-the goal, why it matters, what success looks like, what kind of project it is (a hobby, a \
-quick prototype, research or a product people rely on), and the priorities and trade-offs \
-that should guide the work.
-
-You never ask about implementation: no tools, stacks, architectures or "A or B?" technical \
-choices. Agents decide those once they understand the strategy. If the owner drifts into \
-detail, steer back to what the detail is for.
-
-You have silent tools for memory and the task graph. Use them; never name them or narrate \
-calling them to the owner.
+# Who the agent is and its role come from agent_identity/ (shared with the planner and
+# workers). This adds how it works in this app: its tools, the first plan, its character.
+# The writing rules follow The Economist's style guide: clarity first, short words, short
+# sentences, no jargon, never stuffy, chatty or pleased with itself.
+CHARACTER = """You have silent tools for memory and the task graph. Use them; never name \
+them or narrate calling them to the owner.
 - Call recall (or get_context) before asking a question memory might already answer.
 - Call remember when the owner states a goal, priority, success criterion, preference or \
 correction.
@@ -96,7 +94,34 @@ def configure_tools(tools: AgentTools | None) -> None:
 
 
 def instructions(mode: Mode) -> str:
-    return f"{CHARACTER}\n\n{STYLE[mode]}"
+    return "\n\n".join(
+        (system_prompt("strategy_partner"), "## In this app", CHARACTER, STYLE[mode])
+    )
+
+
+def _opening_context() -> str:
+    """What memory and the task graph already hold, for a conversation's first turn."""
+    if _tools is None:
+        return ""
+    try:
+        memory = _tools.memory.context(
+            project_id=_tools.project_id, user_id=_tools.user_id
+        )["text"]
+        graph = _tools.taskgraph.graph()
+    except Exception:  # noqa: BLE001 — context is a bonus; never block the chat
+        log.warning("could not load opening context", exc_info=True)
+        return ""
+    tasks = graph.get("tasks", [])
+    if tasks:
+        counts = Counter(task["status"] for task in tasks)
+        board = f"{len(tasks)} tasks: "
+        board += ", ".join(f"{n} {status}" for status, n in counts.items()) + "."
+        pending = len(graph.get("pendingDecisions", []))
+        if pending:
+            board += f" {pending} strategy question(s) waiting for the owner."
+    else:
+        board = "No tasks yet."
+    return "\n\n".join(part for part in (memory, f"## Project board\n\n{board}") if part)
 
 
 def _client() -> genai.Client:
@@ -163,16 +188,24 @@ def chat(
     previous_interaction_id: str | None = None,
     mode: Mode = "text",
     user: str | None = None,
+    on_tool: Callable[[str, dict[str, Any], Any], None] | None = None,
 ) -> dict[str, Any]:
     """Send a user message and return the agent reply + interaction id.
 
-    `user` is the signed-in owner; their memory is read and written. A new
-    conversation starts with what memory already knows, so the agent does not
-    depend on choosing to look it up.
+    on_tool(name, arguments, result) is called after each tool call, e.g. to
+    show it live in a shared conversation.
     """
     text = message.strip()
     if not text:
         raise HTTPException(status_code=400, detail="message is required")
+
+    if not previous_interaction_id:
+        context = _opening_context()
+        if context:
+            text = (
+                f"[What Orchestrators already knows]\n{context}\n"
+                f"[End of what is known]\n\n{text}"
+            )
 
     client = _client()
     agent_tools = _tools.for_user(user) if _tools is not None and user else _tools
@@ -211,7 +244,10 @@ def chat(
         results: list[dict[str, Any]] = []
         for step in calls:
             name = getattr(step, "name", None) or ""
-            payload = agent_tools.dispatch(name, _call_args(step))
+            args = _call_args(step)
+            payload = agent_tools.dispatch(name, args)
+            if on_tool is not None:
+                on_tool(name, args, payload)
             results.append(
                 {
                     "type": "function_result",

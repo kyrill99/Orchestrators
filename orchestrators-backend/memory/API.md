@@ -13,9 +13,11 @@ What the agents learn and keep across sessions. One `MemoryService` behind REST
 
 ## Model
 
-Each memory is a markdown file `<scope folder>/<kind>/<slug>.md` under `data/memory`
-(`MEMORY_PATH`): frontmatter with one `key: <json>` per line, then the body. Files can be
-edited by hand. `log.jsonl` records every create / update / use / feedback.
+Memories are stored in SQLite by default (`memories` and `memory_log` tables; see
+`storage.py`). With `MEMORY_STORE=markdown`, each memory is instead a markdown file
+`<scope folder>/<kind>/<slug>.md` under `data/memory` (`MEMORY_PATH`): frontmatter with one
+`key: <json>` per line, then the body, editable by hand, and `log.jsonl` records every
+create / update / use / feedback. The id is the same either way.
 
 - **Memory**: `id, scope, projectId, userId, kind (strategy|preference|decision|learning|note),
   title, body, tags[], source {type: conversation|decision|changeset|manual, ref},
@@ -85,10 +87,11 @@ python -m unittest discover tests
 ## Example
 
 ```python
-from memory import MemoryService, MarkdownMemoryStore, ChatMessage
+from memory import MemoryService, ChatMessage
+from storage import open_memory_store
 from taskgraph import Actor
 
-mem = MemoryService(MarkdownMemoryStore("data/memory"), distiller)
+mem = MemoryService(open_memory_store(), distiller)
 system_prompt += mem.context(project_id="chunking-evaluation", user_id="lorenz")["text"]
 # ... conversation ...
 mem.reflect(Actor(type="agent", id="orchestrator-agent"), messages,

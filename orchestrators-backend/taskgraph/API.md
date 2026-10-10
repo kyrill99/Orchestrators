@@ -2,8 +2,9 @@
 
 One API for the GUI (REST, `api.py`) and the planner agent (MCP, `mcp_server.py`).
 Both call `TaskGraphService`; every change is recorded in an append-only event log
-(`data/taskgraph.jsonl`), so the activity feed, timeline and decision log are views
-over the same events. GUI and MCP processes can share the log file safely.
+(the `taskgraph_events` table in the SQLite database, or `data/taskgraph.jsonl` with
+`TASKGRAPH_STORE=jsonl`; see `storage.py`), so the activity feed, timeline and decision
+log are views over the same events. GUI and MCP processes can share the log safely.
 
 ## Model (JSON is camelCase, matching `orchestrators-frontend/lib/fixtures.ts`)
 
@@ -71,7 +72,7 @@ project settings stay human-only (REST).
 
 ```bash
 cd orchestrators-backend
-python -m taskgraph.mcp_server        # stdio; env TASKGRAPH_PATH, TASKGRAPH_AGENT_ID
+python -m taskgraph.mcp_server        # stdio; env DATABASE_PATH, TASKGRAPH_AGENT_ID
 python -m unittest discover tests     # tests
 ```
 
@@ -81,10 +82,10 @@ Hook it into an agent, e.g. Claude Code (`.mcp.json` in the project the planner 
 {"mcpServers": {"taskgraph": {
   "command": "python", "args": ["-m", "taskgraph.mcp_server"],
   "cwd": "orchestrators-backend",
-  "env": {"TASKGRAPH_PATH": "data/taskgraph.jsonl", "TASKGRAPH_AGENT_ID": "planner"}}}}
+  "env": {"DATABASE_PATH": "data/orchestrators.db", "TASKGRAPH_AGENT_ID": "planner"}}}}
 ```
 
-Point `TASKGRAPH_PATH` at the same file as the FastAPI app so the GUI sees the planner's
+Point `DATABASE_PATH` (and `TASKGRAPH_STORE`, if set) at the same store as the FastAPI app so the GUI sees the planner's
 changes and runs live.
 
 ## Agent runs (`runs.py`)

@@ -15,11 +15,6 @@ export type GradiumToken = {
   tts_url: string;
 };
 
-export type AgentChatResponse = {
-  reply: string;
-  interaction_id: string;
-};
-
 export async function fetchGradiumToken(): Promise<GradiumToken> {
   const response = await fetch(`${apiBaseUrl()}/api/voice/token`, {
     method: "POST",
@@ -34,23 +29,72 @@ export async function fetchGradiumToken(): Promise<GradiumToken> {
 /** "voice" asks for short, speakable replies with less thinking time. */
 export type AgentMode = "text" | "voice";
 
-export async function sendAgentMessage(
-  message: string,
-  previousInteractionId?: string | null,
-  mode: AgentMode = "text",
-): Promise<AgentChatResponse> {
-  const response = await fetch(`${apiBaseUrl()}/api/agent/chat`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      message,
-      previous_interaction_id: previousInteractionId || undefined,
-      mode,
-    }),
+export type Me = { email: string; name: string };
+
+export type Participant = { email: string; name: string };
+
+export type ConversationMessage = {
+  id: number;
+  conversation_id: string;
+  role: "user" | "agent" | "error" | "tool";
+  author_email: string | null;
+  author_name: string | null;
+  content: string;
+  mode: AgentMode;
+  /** Unix seconds. */
+  created_at: number;
+};
+
+export type ConversationSummary = {
+  id: string;
+  title: string;
+  created_by: string;
+  created_by_name: string;
+  created_at: number;
+  updated_at: number;
+  mode: AgentMode;
+  message_count: number;
+  participants: Participant[];
+  last_message: ConversationMessage | null;
+  /** The agent is answering right now. */
+  thinking: boolean;
+};
+
+export type ConversationDetail = ConversationSummary & {
+  messages: ConversationMessage[];
+};
+
+export type PostMessageResult = {
+  message: ConversationMessage | null;
+  reply: ConversationMessage;
+};
+
+export class ApiError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.status = status;
+  }
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(`${apiBaseUrl()}${path}`, {
+    ...init,
+    headers: init?.body ? { "Content-Type": "application/json" } : undefined,
   });
   if (!response.ok) {
-    const detail = await response.text();
-    throw new Error(detail || "Agent chat failed");
+    const text = await response.text();
+    let detail = text;
+    try {
+      detail = JSON.parse(text).detail ?? text;
+    } catch {
+      // plain-text error body
+    }
+    throw new ApiError(
+      detail || `${path} failed (${response.status})`,
+      response.status,
+    );
   }
   return response.json();
 }
@@ -126,4 +170,46 @@ export async function fetchActiveRuns(): Promise<AgentRun[]> {
   } catch {
     return [];
   }
+}
+
+export function fetchMe(): Promise<Me> {
+  return request("/api/me");
+}
+
+export function listConversations(): Promise<ConversationSummary[]> {
+  return request("/api/conversations");
+}
+
+export function getConversation(id: string): Promise<ConversationDetail> {
+  return request(`/api/conversations/${encodeURIComponent(id)}`);
+}
+
+export function createConversation(
+  mode: AgentMode = "text",
+): Promise<ConversationSummary> {
+  return request("/api/conversations", {
+    method: "POST",
+    body: JSON.stringify({ mode }),
+  });
+}
+
+/**
+ * Post to a shared conversation and wait for the agent's reply. Everyone
+ * watching sees both live; `hidden` sends a stage direction that is not shown.
+ */
+export function postConversationMessage(
+  id: string,
+  content: string,
+  mode: AgentMode = "text",
+  hidden = false,
+): Promise<PostMessageResult> {
+  return request(`/api/conversations/${encodeURIComponent(id)}/messages`, {
+    method: "POST",
+    body: JSON.stringify({ content, mode, hidden }),
+  });
+}
+
+/** Server-Sent Events: conversation, message, thinking, resync. */
+export function conversationStreamUrl(): string {
+  return `${apiBaseUrl()}/api/conversations/stream`;
 }

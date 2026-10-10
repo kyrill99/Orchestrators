@@ -16,7 +16,9 @@ from taskgraph import (  # noqa: E402
     TaskGraphError,
     TaskGraphService,
 )
+from db import Database  # noqa: E402
 from taskgraph.models import CreateTask, DeleteTask, RequestDecision  # noqa: E402
+from taskgraph.sqlite_store import SqliteEventStore  # noqa: E402
 
 H = Actor(type="human", id="lorenz")
 A = Actor(type="agent", id="planner")
@@ -286,6 +288,7 @@ class McpRunToolsTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             env = {
                 **os.environ,
+                "DATABASE_PATH": os.path.join(d, "o.db"),
                 "TASKGRAPH_PATH": os.path.join(d, "g.jsonl"),
                 "MEMORY_PATH": os.path.join(d, "memory"),
                 "TASKGRAPH_RUNNER": "subprocess",
@@ -308,8 +311,10 @@ class McpRunToolsTest(unittest.TestCase):
                         await asyncio.sleep(0.1)
 
             asyncio.run(go())
-            # The run is in the shared log, so the FastAPI process sees it too.
-            svc = TaskGraphService(JsonlEventStore(env["TASKGRAPH_PATH"]))
+            # The run is in the shared database, so the FastAPI process sees it too.
+            db = Database(env["DATABASE_PATH"])
+            self.addCleanup(db.close)
+            svc = TaskGraphService(SqliteEventStore(db))
             self.assertEqual(svc.run("run-1").status, "succeeded")
             with open(svc.run("run-1").log_path) as fh:
                 self.assertIn("Task h: Hello", fh.read())

@@ -1,22 +1,24 @@
 from __future__ import annotations
 
 import os
-from typing import Literal
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from google import genai
-from pydantic import BaseModel, Field
 
-from services.agent import chat as agent_chat
 from services.agent import configure_tools
 from services.agent_tools import AgentTools
 from services.gradium import create_browser_token
 
 from changelog import build_router as build_changelog_router
+from conversations import CHANNEL as CONVERSATIONS_CHANNEL
+from conversations import ConversationService, ConversationStore
+from conversations import build_router as build_conversations_router
 from db import Database
 from identity import current_user
+from events import Broker, PublishingEventStore
+from events import build_router as build_events_router
 from memory import MemoryService
 from memory.api import build_router as build_memory_router
 from memory.distill import GeminiDistiller
@@ -48,7 +50,15 @@ app.add_middleware(
 # Task graph and memory backends are chosen in storage.py.
 db = Database()
 
-taskgraph = TaskGraphService(open_taskgraph_store(db))
+# In-process pub/sub for live updates (SSE); see events.py. One uvicorn worker.
+broker = Broker()
+app.include_router(build_events_router(broker, ["graph", CONVERSATIONS_CHANNEL]))
+
+# Every task graph event appended by this process is also published live on
+# the "graph" channel (GET /api/events?channel=graph).
+taskgraph = TaskGraphService(
+    PublishingEventStore(open_taskgraph_store(db), broker, "graph")
+)
 app.include_router(build_router(taskgraph))
 
 memory = MemoryService(
@@ -67,16 +77,9 @@ app.include_router(build_sysstats_router())
 # GET /api/me plus per-user state; replaces identity.build_router().
 app.include_router(build_userstate_router(UserStateStore(db)))
 
-
-class ChatRequest(BaseModel):
-    message: str = Field(..., min_length=1)
-    previous_interaction_id: str | None = None
-    mode: Literal["text", "voice"] = "text"
-
-
-class ChatResponse(BaseModel):
-    reply: str
-    interaction_id: str
+app.include_router(
+    build_conversations_router(ConversationService(ConversationStore(db), broker))
+)
 
 
 @app.get("/health")
