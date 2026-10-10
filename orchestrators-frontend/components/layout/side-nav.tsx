@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
-  FolderKanban,
+  Box,
   Brain,
   ChevronDown,
   MousePointer2,
@@ -14,7 +14,7 @@ import { UpdateControl } from "@/components/layout/update-control";
 
 const items = [
   { href: "/agent", label: "Agent", icon: MousePointer2 },
-  { href: "/project", label: "Project", icon: FolderKanban },
+  { href: "/project", label: "Project", icon: Box },
   { href: "/memory", label: "Memory", icon: Brain },
 ] as const;
 
