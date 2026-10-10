@@ -216,7 +216,7 @@ export function layoutGraph(
   }
 
   const COL = 300;
-  const ROW = 140;
+  const ROW = 150;
   const out: Record<string, { x: number; y: number }> = {};
   const maxLayer = Math.max(0, ...layers.keys());
   for (let d = 0; d <= maxLayer; d++) {

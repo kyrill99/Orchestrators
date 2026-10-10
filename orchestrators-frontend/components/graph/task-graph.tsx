@@ -4,7 +4,9 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   Background,
+  BackgroundVariant,
   Controls,
+  MarkerType,
   ReactFlow,
   useEdgesState,
   useNodesState,
@@ -21,6 +23,13 @@ import { useTaskGraph } from "@/lib/use-task-graph";
 import { setSelection } from "@/lib/presence";
 import { FlowMultiplayer } from "@/components/multiplayer/cursors";
 import { getCurrentProjectId, projectPath } from "@/lib/project-scope";
+
+const EDGE_IDLE = "#d4d4d8";
+const EDGE_LIVE = "#5E6AD2";
+/** Rounder elbows on smoothstep edges (spread so it isn't excess-checked). */
+const SMOOTH_PATH: { pathOptions: { borderRadius: number } } = {
+  pathOptions: { borderRadius: 8 },
+};
 
 export function TaskGraph() {
   const router = useRouter();
@@ -66,10 +75,17 @@ export function TaskGraph() {
         source: edge.source,
         target: edge.target,
         type: "smoothstep",
+        ...SMOOTH_PATH,
         animated: live,
         style: live
-          ? { stroke: "#5E6AD2", strokeWidth: 1.5 }
-          : { stroke: "#e4e4e7", strokeWidth: 1.25 },
+          ? { stroke: EDGE_LIVE, strokeWidth: 1.5 }
+          : { stroke: EDGE_IDLE, strokeWidth: 1.25 },
+        markerEnd: {
+          type: MarkerType.ArrowClosed,
+          width: 14,
+          height: 14,
+          color: live ? EDGE_LIVE : EDGE_IDLE,
+        },
       };
     });
     return { nodes, edges: flowEdges, seq };
@@ -182,7 +198,7 @@ export function TaskGraph() {
         nodeTypes={nodeTypes}
         onNodeClick={onNodeClick}
         fitView
-        fitViewOptions={{ padding: 0.24 }}
+        fitViewOptions={{ padding: 0.2, maxZoom: 1.1 }}
         nodesDraggable={false}
         nodesConnectable={false}
         elementsSelectable
@@ -190,7 +206,12 @@ export function TaskGraph() {
         proOptions={{ hideAttribution: true }}
         className="cursor-grab"
       >
-        <Background gap={20} size={1} color="#ececef" />
+        <Background
+          variant={BackgroundVariant.Dots}
+          gap={18}
+          size={1}
+          color="#e5e7eb"
+        />
         <FlowMultiplayer location="graph" />
         <Controls
           showInteractive={false}

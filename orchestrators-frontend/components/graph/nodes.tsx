@@ -4,10 +4,11 @@ import { Handle, Position, type NodeProps } from "@xyflow/react";
 import { Bot } from "lucide-react";
 import { getAssignee, type AssigneeId } from "@/lib/assignees";
 import { StatusBadge } from "@/components/task/status-badge";
+import { StatusIcon } from "@/components/task/status-icon";
 import { AssigneeAvatar } from "@/components/task/assignee-picker";
 import { AvatarStack } from "@/components/presence/presence";
 import { presenceColor, presenceName, useTaskPresence } from "@/lib/presence";
-import type { TaskKind, TaskStatus } from "@/lib/fixtures";
+import { statusLabel, type TaskKind, type TaskStatus } from "@/lib/fixtures";
 import { cn } from "@/lib/utils";
 
 export type GraphNodeData = {
@@ -58,13 +59,40 @@ function NodePresence({ id }: { id: string }) {
   );
 }
 
+/** Thin status cue on the node's left edge (Linear-style). */
+const STATUS_ACCENT: Record<TaskStatus, string> = {
+  open: "bg-neutral-300",
+  running: "bg-[#5E6AD2]",
+  "in-review": "bg-amber-400",
+  closed: "bg-emerald-500",
+};
+
+const NODE_SURFACE =
+  "border bg-background shadow-[0_1px_2px_rgba(0,0,0,0.04),0_4px_12px_-4px_rgba(0,0,0,0.06)] transition-[box-shadow,border-color] duration-150";
+const NODE_HOVER =
+  "group-hover:shadow-[0_1px_2px_rgba(0,0,0,0.05),0_8px_20px_-6px_rgba(0,0,0,0.10)]";
+const NODE_SELECTED = "ring-2 ring-[#5E6AD2]/30";
+const NODE_RUNNING =
+  "motion-safe:animate-[mini-graph-breathe_2.8s_ease-in-out_infinite]";
+
+/** One border colour per state so classes never fight. */
+function borderClass(selected: boolean | undefined, running: boolean): string {
+  if (running || selected) return "border-[#5E6AD2]/40";
+  return "border-black/[0.08] group-hover:border-black/[0.12]";
+}
+const HANDLE_CLASS =
+  "!size-1.5 !min-h-0 !min-w-0 !border-0 !bg-neutral-400 !opacity-0 transition-opacity group-hover:!opacity-100";
+
 function NodeMeta({ data }: { data: GraphNodeData }) {
   const assignee = getAssignee(data.assigneeId ?? "unassigned");
   const showAssignee = assignee.kind !== "unassigned";
 
   return (
-    <div className="mt-1.5 flex items-center justify-between gap-2">
-      <StatusBadge status={data.status} />
+    <div className="mt-1 flex h-5 items-center justify-between gap-2">
+      <span className="inline-flex min-w-0 items-center gap-1 text-[11px] leading-none text-muted-foreground tabular-nums">
+        <StatusIcon status={data.status} />
+        <span className="truncate">{statusLabel[data.status]}</span>
+      </span>
       <span className="inline-flex shrink-0 items-center gap-1">
         {data.agent ? (
           <span
@@ -77,11 +105,20 @@ function NodeMeta({ data }: { data: GraphNodeData }) {
         {showAssignee ? (
           <AssigneeAvatar
             assignee={assignee}
-            className="size-5 text-[10px]"
+            className="size-[18px] text-[9px]"
           />
         ) : null}
       </span>
     </div>
+  );
+}
+
+function RunningPing() {
+  return (
+    <span className="pointer-events-none absolute -top-1 -left-1 z-10 flex size-2.5">
+      <span className="absolute inline-flex size-full rounded-full bg-[#5E6AD2] opacity-60 motion-safe:animate-ping" />
+      <span className="relative inline-flex size-2.5 rounded-full bg-[#5E6AD2] ring-2 ring-background" />
+    </span>
   );
 }
 
@@ -96,85 +133,114 @@ function NodeChrome({
   selected?: boolean;
   className?: string;
 }) {
+  const running = data.status === "running";
   return (
-    <div
-      className={cn(
-        "relative min-w-[168px] max-w-[220px] cursor-pointer border bg-background px-3 py-2.5 shadow-[0_1px_2px_rgba(0,0,0,0.04)] transition-[border-color,box-shadow]",
-        selected
-          ? "border-foreground/40 shadow-[0_1px_3px_rgba(0,0,0,0.08)]"
-          : "border-border hover:border-foreground/20",
-        data.status === "running" &&
-          "border-[#5E6AD2]/50 motion-safe:animate-[mini-graph-breathe_2.8s_ease-in-out_infinite]",
-        className,
-      )}
-    >
-      {data.status === "running" ? (
-        <span className="pointer-events-none absolute -top-1 -left-1 flex size-2.5">
-          <span className="absolute inline-flex size-full rounded-full bg-[#5E6AD2] opacity-60 motion-safe:animate-ping" />
-          <span className="relative inline-flex size-2.5 rounded-full bg-[#5E6AD2]" />
-        </span>
-      ) : null}
+    <div className="group relative w-[220px] cursor-pointer rounded-lg">
+      <Handle type="target" position={Position.Top} className={HANDLE_CLASS} />
+      <div
+        className={cn(
+          "relative overflow-hidden rounded-lg py-2 pr-3 pl-3.5",
+          NODE_SURFACE,
+          NODE_HOVER,
+          borderClass(selected, running),
+          selected && NODE_SELECTED,
+          running && NODE_RUNNING,
+          className,
+        )}
+      >
+        <span
+          aria-hidden
+          className={cn(
+            "pointer-events-none absolute inset-y-0 left-0 w-[3px]",
+            STATUS_ACCENT[data.status],
+          )}
+        />
+        <p className="line-clamp-2 text-[13px] leading-[18px] font-medium tracking-[-0.005em] text-foreground">
+          {data.title}
+        </p>
+        <NodeMeta data={data} />
+      </div>
+      {running ? <RunningPing /> : null}
       <NodePresence id={id} />
-      <Handle
-        type="target"
-        position={Position.Top}
-        className="!size-1.5 !border-0 !bg-neutral-300"
-      />
-      <p className="text-[13px] leading-snug font-medium text-foreground">
-        {data.title}
-      </p>
-      <NodeMeta data={data} />
-      <Handle
-        type="source"
-        position={Position.Bottom}
-        className="!size-1.5 !border-0 !bg-neutral-300"
-      />
+      <Handle type="source" position={Position.Bottom} className={HANDLE_CLASS} />
+    </div>
+  );
+}
+
+/** Start / end milestones: a small centred pill on the same column width. */
+function MilestoneNode({
+  id,
+  data,
+  selected,
+}: {
+  id: string;
+  data: GraphNodeData;
+  selected?: boolean;
+}) {
+  const running = data.status === "running";
+  return (
+    <div className="group relative flex w-[220px] cursor-pointer justify-center">
+      <Handle type="target" position={Position.Top} className={HANDLE_CLASS} />
+      <div className="relative rounded-full">
+        <div
+          className={cn(
+            "inline-flex h-7 max-w-[200px] items-center gap-1.5 rounded-full px-3",
+            NODE_SURFACE,
+            NODE_HOVER,
+            borderClass(selected, running),
+            selected && NODE_SELECTED,
+            running && NODE_RUNNING,
+          )}
+        >
+          <span
+            aria-hidden
+            className={cn("size-1.5 shrink-0 rounded-full", STATUS_ACCENT[data.status])}
+          />
+          <span className="truncate text-[12px] leading-none font-medium text-foreground">
+            {data.title}
+          </span>
+          <StatusBadge status={data.status} iconOnly />
+        </div>
+        {running ? <RunningPing /> : null}
+        <NodePresence id={id} />
+      </div>
+      <Handle type="source" position={Position.Bottom} className={HANDLE_CLASS} />
     </div>
   );
 }
 
 export function StartNode({ id, data, selected }: NodeProps) {
   return (
-    <NodeChrome
-      id={id}
-      data={data as GraphNodeData}
-      selected={selected}
-      className="rounded-full px-4 text-center"
-    />
+    <MilestoneNode id={id} data={data as GraphNodeData} selected={selected} />
   );
 }
 
 export function TaskNode({ id, data, selected }: NodeProps) {
   return (
-    <NodeChrome
-      id={id}
-      data={data as GraphNodeData}
-      selected={selected}
-      className="rounded-md"
-    />
+    <NodeChrome id={id} data={data as GraphNodeData} selected={selected} />
   );
 }
 
 export function DecisionNode({ id, data, selected }: NodeProps) {
   const nodeData = data as GraphNodeData;
+  const running = nodeData.status === "running";
   return (
-    <div className="relative flex h-[120px] w-[120px] cursor-pointer items-center justify-center">
-      <NodePresence id={id} />
-      <Handle
-        type="target"
-        position={Position.Top}
-        className="!size-1.5 !border-0 !bg-neutral-300"
-      />
-      <div
-        className={cn(
-          "flex size-[84px] rotate-45 items-center justify-center border bg-background shadow-[0_1px_2px_rgba(0,0,0,0.04)]",
-          selected
-            ? "border-foreground/40"
-            : "border-border hover:border-foreground/20",
-        )}
-      >
-        <div className="-rotate-45 flex flex-col items-center gap-1 px-1.5 text-center">
-          <p className="text-[11px] leading-tight font-medium text-foreground">
+    <div className="group relative flex h-[112px] w-[220px] cursor-pointer items-center justify-center">
+      <Handle type="target" position={Position.Top} className={HANDLE_CLASS} />
+      <div className="relative flex size-[112px] items-center justify-center">
+        <NodePresence id={id} />
+        <div
+          className={cn(
+            "absolute size-[78px] rotate-45 rounded-[6px]",
+            NODE_SURFACE,
+            NODE_HOVER,
+            borderClass(selected, running),
+            selected && NODE_SELECTED,
+            running && NODE_RUNNING,
+          )}
+        />
+        <div className="relative flex max-w-[84px] flex-col items-center gap-1 text-center">
+          <p className="line-clamp-3 text-[11px] leading-[14px] font-medium tracking-[-0.005em] text-foreground">
             {nodeData.title}
           </p>
           <span className="inline-flex items-center gap-1">
@@ -189,23 +255,14 @@ export function DecisionNode({ id, data, selected }: NodeProps) {
           </span>
         </div>
       </div>
-      <Handle
-        type="source"
-        position={Position.Bottom}
-        className="!size-1.5 !border-0 !bg-neutral-300"
-      />
+      <Handle type="source" position={Position.Bottom} className={HANDLE_CLASS} />
     </div>
   );
 }
 
 export function EndNode({ id, data, selected }: NodeProps) {
   return (
-    <NodeChrome
-      id={id}
-      data={data as GraphNodeData}
-      selected={selected}
-      className="rounded-full px-4 text-center"
-    />
+    <MilestoneNode id={id} data={data as GraphNodeData} selected={selected} />
   );
 }
 
