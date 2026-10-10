@@ -1,6 +1,11 @@
+import os
+
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from google import genai
+
+from taskgraph import JsonlEventStore, TaskGraphService
+from taskgraph.api import build_router
 
 load_dotenv()
 
@@ -11,6 +16,12 @@ app = FastAPI(
     description="Backend for agentic project orchestration",
     version="0.1.0",
 )
+
+
+taskgraph = TaskGraphService(
+    JsonlEventStore(os.environ.get("TASKGRAPH_PATH", "data/taskgraph.jsonl"))
+)
+app.include_router(build_router(taskgraph))
 
 
 @app.get("/health")
