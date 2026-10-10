@@ -13,6 +13,8 @@ from services.agent import chat as agent_chat
 from services.gradium import create_browser_token
 
 from changelog import build_router as build_changelog_router
+from db import Database
+from identity import build_router as build_identity_router
 from memory import MarkdownMemoryStore, MemoryService
 from memory.api import build_router as build_memory_router
 from memory.distill import GeminiDistiller
@@ -53,6 +55,10 @@ app.include_router(build_memory_router(memory, taskgraph))
 app.include_router(build_selfupdate_router("data"))
 app.include_router(build_changelog_router("data"))
 app.include_router(build_sysstats_router())
+app.include_router(build_identity_router())
+
+# Shared local SQLite database (data/orchestrators.db); see db.py.
+db = Database()
 
 
 class ChatRequest(BaseModel):
