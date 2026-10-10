@@ -50,10 +50,20 @@ Humans' changes always apply. Humans approve/reject proposals.
 | `POST /tasks/{id}/run/start` | `{actor, reason?, agentId?, instructions?}` → the run (agent defaults to `worker`) |
 | `POST /tasks/{id}/run/stop` | `{actor, reason?}` → the stopped run; 409 if the task has no active run |
 | `POST /tasks/{id}/run/restart` | `{actor, reason?, agentId?, instructions?}` → the new run (stops the active one first) |
+| `GET /tasks/{id}/runs` | every run of the task, oldest first |
+| `GET /runs/{runId}/steps?after=&limit=` | `{run, active, steps[], next}`: what the agent did, after step `after` (poll with `next`) |
+| `GET /tasks/{id}/scratchpad` | `{taskId, content, updatedAt, updatedBy}` (empty content if never written) |
+| `PUT /tasks/{id}/scratchpad` | `{content, actor?}` (actor defaults to the signed-in user) |
 | `GET /changesets?status=` | changesets |
 | `POST /changes` | `{actor, ops[], reason, baseSeq?}` → `{changesetId, status, seq, createdIds}` |
 | `POST /changesets/{id}/review` | `{actor, approve, note}` |
 | `PATCH /settings` | `{actor, name?, autonomy?}` |
+
+Engine (`/api/engine`, see below): `GET` → `{state, running, runner, maxRuns, activeRuns[], queue[], updatedAt, updatedBy, reason}`,
+`POST /start {reason?}`, `POST /stop {reason?, stopRuns?}` (the signed-in user is recorded).
+
+Live: run steps and scratchpad changes are also published on the SSE channel `runs`
+(`GET /api/events?channel=runs`, events `step` and `scratchpad`); task graph events on `graph`.
 
 Errors: `{code, message, opIndex}` with 404 not_found, 409 conflict, 403 forbidden, 422 invalid/blocked/cycle,
 500 runner (a run could not be launched).
@@ -66,7 +76,11 @@ Writes: `apply_changes(ops, reason)` (atomic batch) plus single-op tools `create
 `update_task`, `set_status`, `assign_task`, `delete_task`, `add_relation`,
 `remove_relation`, `add_comment`, `request_decision`, `resolve_decision`.
 Runs: `start_task`, `stop_task`, `restart_task`, `start_ready_tasks`, `stop_all_runs`,
-`finish_run`, `list_active_runs`, `list_runs`, `get_run`.
+`finish_run(run_id, outcome, summary)`, `list_active_runs`, `list_runs`, `get_run`, `get_run_steps`.
+Scratchpads: `read_scratchpad`, `write_scratchpad`, `append_scratchpad`. Engine: `engine_status`,
+`engine_start`, `engine_stop(stop_runs?)`.
+All of these come from the shared tool table in `services/agent_tools.py` (plain functions;
+MCP and the in-process Gemini agents derive their schemas from the same signatures).
 Memory tools are on the same server (see `../memory/API.md`). Reviewing changesets and
 project settings stay human-only (REST).
 
@@ -108,7 +122,8 @@ What executes a run depends on `TASKGRAPH_RUNNER`:
 
 | runner | start | stop | end |
 |---|---|---|---|
-| `record` (default) | **nothing is launched**; the run is a record that an agent works on the task | recorded only | someone calls `finish_run` |
+| `gemini` (default when `GEMINI_API_KEY` is set) | a Gemini agent in a thread of the API process (`services/gemini_worker.py`); every step goes to `run_steps` | a flag checked between steps (the model call in flight is discarded) | the agent calls `finish_run`; a budget (`GEMINI_WORKER_MAX_STEPS` 40 model calls, `GEMINI_WORKER_MAX_SECONDS` 1200) or an API error fails the run |
+| `record` (default otherwise) | **nothing is launched**; the run is a record that an agent works on the task | recorded only | someone calls `finish_run` |
 | `subprocess` | launches `TASKGRAPH_RUNNER_CMD` (`{run_id}`, `{task_id}`, `{agent_id}` filled in; task brief on stdin; env `TASKGRAPH_RUN_ID`, `TASKGRAPH_TASK_ID`, `TASKGRAPH_AGENT_ID`); output in `TASKGRAPH_RUN_LOGS` (default `<dir of TASKGRAPH_PATH>/runs/<run>.log`) | SIGTERM to the process group, SIGKILL after 5 s | exit code 0 → `succeeded`, else `failed` (or the worker calls `finish_run` first) |
 
 Example worker (untested): `TASKGRAPH_RUNNER_CMD='claude -p --mcp-config worker-mcp.json'`,
@@ -131,3 +146,36 @@ POST /api/taskgraph/changes
    {"op": "decision.request", "taskId": "decision", "question": "Which matters more for this project: recall or latency?"}
  ]}
 ```
+
+### Gemini worker runs (`services/gemini_worker.py`)
+
+One thread per run drives the Gemini Interactions API (`client.interactions.create`, with
+`previous_interaction_id` chaining the turns) over the worker tools
+(`services.agent_tools.worker_tools`): `get_task`, `get_graph`, `add_comment`,
+`update_my_task` (description, progress, add artifacts), `create_subtask`,
+`add_relation`, `request_decision`, `read/write/append_scratchpad`, `get_context`,
+`recall`, `remember`, `finish_run(outcome, summary)`, plus the built-in `google_search`
+and `code_execution` (`GEMINI_WORKER_BUILTIN_TOOLS`), and the issue tools (`list_issues`,
+`get_issue`, `create_issue`, ...). No shell or file access. Model:
+`GEMINI_WORKER_MODEL` (default `gemini-3.8-flash`).
+
+Steps (`run_steps` table: `thinking`, `message`, `tool_call`, `tool_result`, `error`,
+`status`) are written as they happen. Each task has a markdown scratchpad (`scratchpads`
+table) that the agent keeps as working memory; the brief of every attempt contains the
+task, what its blockers produced, the scratchpad, recent comments, earlier attempts and
+what memory knows (plus a reviewer's send-back note as instructions), so a
+restarted run continues where the last one stopped.
+
+Runs live in the API process. When it restarts (self-update), `reconcile` on startup
+marks its unfinished runs `lost` with the note "interrupted: ...".
+
+### Engine (`engine.py`)
+
+While running, the engine starts runs (agent `ENGINE_AGENT_ID`, default `gemini`) on
+ready work tasks until `ENGINE_MAX_RUNS` (2) are active, checking every
+`ENGINE_INTERVAL` (2 s). Queued: kind `task`, ready (open, blockers closed, no pending
+decision), no active run, and either never run or last run `lost` (fewer than
+`ENGINE_MAX_ATTEMPTS`, 3, in a row). Failed or stopped tasks wait for a human or the
+planner to restart them, so a failing task cannot loop; succeeded tasks are in review.
+The state (`engine_state` table) survives restarts; default stopped. The engine refuses
+to start with the `record` runner.

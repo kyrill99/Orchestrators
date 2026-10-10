@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import sys
 from typing import Literal
 
 from dotenv import load_dotenv
@@ -13,6 +12,7 @@ from pydantic import BaseModel, Field
 from services.agent import chat as agent_chat
 from services.agent import configure_tools
 from services.agent_tools import AgentTools
+from services.gemini_worker import GeminiRunner
 from services.gradium import create_browser_token
 
 from changelog import build_router as build_changelog_router
@@ -35,16 +35,14 @@ from selfupdate import build_router as build_selfupdate_router
 from storage import open_memory_store, open_taskgraph_store
 from sysstats import build_router as build_sysstats_router
 from taskgraph import TaskGraphService
-from taskgraph.api import build_router
+from taskgraph.api import build_engine_router, build_router
+from taskgraph.engine import Engine
+from taskgraph.runlog import RunLog, Scratchpads
+from taskgraph.runs import RunManager, runner_from_env
 from userstate import UserStateStore
 from userstate import build_router as build_userstate_router
 
 load_dotenv()
-
-# Agent runs execute the Gemini worker (taskgraph/worker.py) unless configured
-# otherwise; set TASKGRAPH_RUNNER=record to only track runs.
-os.environ.setdefault("TASKGRAPH_RUNNER", "subprocess")
-os.environ.setdefault("TASKGRAPH_RUNNER_CMD", f"{sys.executable} -m taskgraph.worker")
 
 MODEL = "gemini-3.8-flash"
 
@@ -66,14 +64,13 @@ db = Database()
 
 # In-process pub/sub for live updates (SSE); see events.py. One uvicorn worker.
 broker = Broker()
-app.include_router(build_events_router(broker, ["graph", CONVERSATIONS_CHANNEL, PRESENCE_CHANNEL]))
+app.include_router(build_events_router(broker, ["graph", "runs", CONVERSATIONS_CHANNEL, PRESENCE_CHANNEL]))
 
 # Every task graph event appended by this process is also published live on
 # the "graph" channel (GET /api/events?channel=graph).
 taskgraph = TaskGraphService(
     PublishingEventStore(open_taskgraph_store(db), broker, "graph")
 )
-app.include_router(build_router(taskgraph))
 
 memory = MemoryService(
     open_memory_store(db),
@@ -84,6 +81,41 @@ app.include_router(build_memory_router(memory, taskgraph))
 # Issue list; screenshots under data/issues (ISSUES_PATH).
 issues = IssueService(db)
 app.include_router(build_issues_router(issues))
+
+
+# Agent runs: a Gemini agent per run, in this process, when GEMINI_API_KEY is
+# set (services/gemini_worker.py; TASKGRAPH_RUNNER overrides, e.g. "subprocess"
+# with TASKGRAPH_RUNNER_CMD="python -m taskgraph.worker" for the one-shot
+# worker, or "record"). Steps and scratchpads live in SQLite, and the engine
+# starts runs on ready tasks while it is running.
+# Steps and scratchpad edits are also published live on the "runs" channel.
+def _publish_run_event(type_: str, data: dict) -> None:
+    broker.publish("runs", type_, data)
+
+
+runlog = RunLog(db, _publish_run_event)
+scratchpads = Scratchpads(db, _publish_run_event)
+runs = RunManager(
+    taskgraph,
+    runner_from_env(lambda: GeminiRunner(taskgraph, runlog, scratchpads, memory=memory, issues=issues)),
+)
+engine = Engine(taskgraph, runs, db)
+app.include_router(build_router(taskgraph, runs, runlog=runlog, scratchpads=scratchpads))
+app.include_router(build_engine_router(engine))
+
+
+@app.on_event("startup")
+def _start_engine() -> None:
+    # Runs this process did not finish before a restart are marked lost
+    # (interrupted); the engine restarts them if it is running.
+    runs.reconcile()
+    engine.start_loop()
+
+
+@app.on_event("shutdown")
+def _stop_engine() -> None:
+    engine.stop_loop()
+
 
 # Interview chat uses the same memory/taskgraph/issue ops as MCP, in-process.
 configure_tools(AgentTools(memory, taskgraph, issues=issues))

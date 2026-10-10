@@ -158,8 +158,8 @@ After=network.target
 [Service]
 User=${APP_USER}
 WorkingDirectory=${APP_DIR}/orchestrators-backend
-Environment=TASKGRAPH_RUNNER=subprocess
-Environment="TASKGRAPH_RUNNER_CMD=${APP_DIR}/orchestrators-backend/.venv/bin/python -m taskgraph.worker"
+# Agent runs execute as in-process Gemini agents when .env has GEMINI_API_KEY
+# (TASKGRAPH_RUNNER unset; see orchestrators-backend/taskgraph/API.md).
 ExecStart=${APP_DIR}/orchestrators-backend/.venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000
 Restart=always
 [Install]
