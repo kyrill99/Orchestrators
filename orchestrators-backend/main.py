@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import os
+from typing import Literal
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from google import genai
+from pydantic import BaseModel, Field
 
+from services.agent import chat as agent_chat
 from services.agent import configure_tools
 from services.agent_tools import AgentTools
 from services.gradium import create_browser_token
@@ -80,6 +83,17 @@ app.include_router(build_userstate_router(UserStateStore(db)))
 app.include_router(
     build_conversations_router(ConversationService(ConversationStore(db), broker))
 )
+
+
+class ChatRequest(BaseModel):
+    message: str = Field(..., min_length=1)
+    previous_interaction_id: str | None = None
+    mode: Literal["text", "voice"] = "text"
+
+
+class ChatResponse(BaseModel):
+    reply: str
+    interaction_id: str
 
 
 @app.get("/health")
