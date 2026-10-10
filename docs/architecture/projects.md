@@ -97,3 +97,11 @@ shows up in that project's graph, timeline and can be picked up by a worker.
   already synced from another project is skipped. Fix: prefix refs with the project id.
 - Issues created through the MCP server (not the FastAPI app) do not become tasks.
 - `python -m storage backup` copies only the main DB, not `data/projects/*.db`.
+
+## Agent conversations
+
+Conversations belong to a project (`conversations.project`, added by migration; old ones
+are `default`). `GET /api/conversations` lists only the current project's; live
+`conversation` events carry `project` and the frontend ignores other projects'. When a
+message is posted, the planner runs in the **conversation's** project (not the poster's
+cookie), so its tools, board summary and project brief always match that chat.

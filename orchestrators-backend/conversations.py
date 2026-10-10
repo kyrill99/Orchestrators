@@ -34,6 +34,7 @@ from starlette.concurrency import run_in_threadpool
 
 import services.agent as agent_service
 from db import Database
+from projects import current_project
 from events import Broker, sse_response
 from identity import User, current_user
 
@@ -100,6 +101,7 @@ class Summary(BaseModel):
     participants: list[Participant]
     last_message: Message | None = None
     thinking: bool = False
+    project: str = "default"
 
 
 class Detail(Summary):
@@ -149,17 +151,31 @@ class ConversationStore:
             for stmt in SCHEMA.split(";"):
                 if stmt.strip():
                     conn.execute(stmt)
+            # Projects (docs/architecture/projects.md): conversations belong to one.
+            cols = {r["name"] for r in conn.execute("PRAGMA table_info(conversations)").fetchall()}
+            if "project" not in cols:
+                conn.execute(
+                    "ALTER TABLE conversations ADD COLUMN project TEXT NOT NULL DEFAULT 'default'"
+                )
 
-    def create(self, user: User, title: str | None = None, mode: Mode = "text") -> str:
+    def create(
+        self, user: User, title: str | None = None, mode: Mode = "text", project: str | None = None
+    ) -> str:
         cid = uuid.uuid4().hex[:12]
         now = time.time()
         with self.db.tx() as conn:
             conn.execute(
                 "INSERT INTO conversations (id, title, created_by, created_by_name,"
-                " created_at, updated_at, mode) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (cid, _title(title or ""), user.email, user.name, now, now, mode),
+                " created_at, updated_at, mode, project) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (cid, _title(title or ""), user.email, user.name, now, now, mode,
+                 project or current_project.get()),
             )
         return cid
+
+    def project_of(self, cid: str) -> str:
+        with self.db.read() as conn:
+            row = conn.execute("SELECT project FROM conversations WHERE id = ?", (cid,)).fetchone()
+        return row["project"] if row and row["project"] else "default"
 
     def exists(self, cid: str) -> bool:
         with self.db.read() as conn:
@@ -214,8 +230,15 @@ class ConversationStore:
             ).fetchall()
         return [_message(r) for r in rows]
 
-    def summaries(self, cid: str | None = None, limit: int = 200) -> list[Summary]:
-        where, args = ("WHERE c.id = ?", (cid,)) if cid else ("", ())
+    def summaries(
+        self, cid: str | None = None, limit: int = 200, project: str | None = None
+    ) -> list[Summary]:
+        if cid:
+            where, args = "WHERE c.id = ?", (cid,)
+        elif project:
+            where, args = "WHERE c.project = ?", (project,)
+        else:
+            where, args = "", ()
         with self.db.read() as conn:
             convs = conn.execute(
                 f"SELECT c.*, (SELECT count(*) FROM messages m WHERE m.conversation_id = c.id"
@@ -266,6 +289,7 @@ class ConversationStore:
                     message_count=c["n"],
                     participants=parts,
                     last_message=last,
+                    project=c["project"] or "default",
                 )
             )
         return out
@@ -295,7 +319,11 @@ class ConversationService:
         return summary
 
     async def list(self) -> list[Summary]:
-        return [self._with_live(s) for s in await run_in_threadpool(self.store.summaries)]
+        project = current_project.get()
+        return [
+            self._with_live(s)
+            for s in await run_in_threadpool(lambda: self.store.summaries(project=project))
+        ]
 
     async def get(self, cid: str) -> Detail:
         summary = await run_in_threadpool(self.store.summary, cid)
@@ -356,6 +384,16 @@ class ConversationService:
             self._publish_message(mine)
             await self._announce(cid)
 
+        # The planner works in the conversation's project, whatever the poster's cookie says.
+        project_token = current_project.set(await run_in_threadpool(self.store.project_of, cid))
+        try:
+            return await self._reply(cid, user, body, text, mine)
+        finally:
+            current_project.reset(project_token)
+
+    async def _reply(
+        self, cid: str, user: User, body: PostBody, text: str, mine: Message
+    ) -> PostResult:
         async with self.lock(cid):
             self._set_thinking(cid, user.name)
             try:

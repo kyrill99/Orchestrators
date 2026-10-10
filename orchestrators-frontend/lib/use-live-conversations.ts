@@ -9,6 +9,7 @@ import {
   type ConversationMessage,
   type ConversationSummary,
 } from "@/lib/api";
+import { getCurrentProjectId } from "@/lib/projects";
 
 /** Union by id, oldest first: events and fetches may arrive in any order. */
 function mergeMessages(
@@ -96,6 +97,8 @@ export function useLiveConversations(selectedId: string | null) {
       };
       source.addEventListener("conversation", (event) => {
         const summary: ConversationSummary = parse(event);
+        // Conversations of other projects stream on the same channel; skip them.
+        if ((summary.project ?? "default") !== getCurrentProjectId()) return;
         setConversations((list) => upsertSummary(list, summary));
         setDetail((prev) =>
           prev && prev.id === summary.id ? { ...prev, ...summary } : prev,
