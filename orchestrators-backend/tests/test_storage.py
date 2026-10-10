@@ -38,6 +38,16 @@ class StorageTestCase(unittest.TestCase):
         self.addCleanup(env.stop)
         for var in ("TASKGRAPH_STORE", "MEMORY_STORE"):
             os.environ.pop(var, None)
+        # Avoid leaking the process-wide default Database across tests.
+        if storage._default_db is not None:
+            storage._default_db.close()
+            storage._default_db = None
+        self.addCleanup(self._close_default_db)
+
+    def _close_default_db(self):
+        if storage._default_db is not None:
+            storage._default_db.close()
+            storage._default_db = None
 
     def open_db(self):
         db = Database()

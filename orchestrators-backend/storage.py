@@ -29,7 +29,7 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
-from db import Database
+from db import Database, database_path
 from memory.sqlite_store import SqliteMemoryStore
 from memory.store import MarkdownMemoryStore
 from taskgraph.models import Event
@@ -160,7 +160,7 @@ def import_markdown(store: SqliteMemoryStore, root: str | os.PathLike[str]) -> i
 
 def backup(dest: str | os.PathLike[str], src: str | None = None) -> Path:
     """Online, consistent copy of the database (safe while the app runs)."""
-    src = src or Database().path
+    src = src or database_path()
     dest = Path(dest)
     if dest.is_dir():
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")

@@ -1,10 +1,5 @@
 import { Suspense } from "react";
-import { tasks } from "@/lib/fixtures";
 import { TaskIssuePage } from "@/components/task/task-issue-page";
-
-export function generateStaticParams() {
-  return tasks.map((task) => ({ id: task.id }));
-}
 
 export default function TaskPage({
   params,

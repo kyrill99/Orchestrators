@@ -220,27 +220,29 @@ function Welcome({
         onSend={onSend}
       />
 
-      <section className="mt-10">
-        <h2 className="mb-2 text-[13px] font-medium text-muted-foreground">
-          Recent
-        </h2>
-        <ul className="divide-y divide-border rounded-xl border border-border">
-          {recentChats.map((chat) => (
-            <li key={chat.id}>
-              <button
-                type="button"
-                onClick={onRecent}
-                className="flex w-full items-center justify-between gap-3 px-3.5 py-2.5 text-left text-[13px] transition-colors hover:bg-accent/60"
-              >
-                <span className="truncate text-foreground">{chat.title}</span>
-                <span className="shrink-0 text-xs text-muted-foreground">
-                  {chat.age}
-                </span>
-              </button>
-            </li>
-          ))}
-        </ul>
-      </section>
+      {recentChats.length > 0 ? (
+        <section className="mt-10">
+          <h2 className="mb-2 text-[13px] font-medium text-muted-foreground">
+            Recent
+          </h2>
+          <ul className="divide-y divide-border rounded-xl border border-border">
+            {recentChats.map((chat) => (
+              <li key={chat.id}>
+                <button
+                  type="button"
+                  onClick={onRecent}
+                  className="flex w-full items-center justify-between gap-3 px-3.5 py-2.5 text-left text-[13px] transition-colors hover:bg-accent/60"
+                >
+                  <span className="truncate text-foreground">{chat.title}</span>
+                  <span className="shrink-0 text-xs text-muted-foreground">
+                    {chat.age}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
     </>
   );
 }

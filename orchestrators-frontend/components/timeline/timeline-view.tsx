@@ -1,23 +1,16 @@
 "use client";
 
-import { useLayoutEffect, useRef } from "react";
+import { useLayoutEffect, useMemo, useRef } from "react";
 import Link from "next/link";
 import {
   Flag,
-  Search,
   FlaskConical,
   GitBranch,
-  Hammer,
   Rocket,
   type LucideIcon,
 } from "lucide-react";
-import {
-  TIMELINE_TODAY,
-  tasks,
-  type Task,
-  type TaskKind,
-  type TaskStatus,
-} from "@/lib/fixtures";
+import type { Task, TaskKind, TaskStatus } from "@/lib/fixtures";
+import { useTaskGraph } from "@/lib/use-task-graph";
 import { cn } from "@/lib/utils";
 
 const DAY_MS = 86_400_000;
@@ -46,12 +39,6 @@ const kindIcon: Record<TaskKind, LucideIcon> = {
   end: Rocket,
 };
 
-const kindIconOverride: Partial<Record<string, LucideIcon>> = {
-  research: Search,
-  implement: Hammer,
-  deploy: Rocket,
-};
-
 const statusAccent: Record<TaskStatus, string> = {
   open: "",
   running: "ring-1 ring-inset ring-sky-500/30",
@@ -72,7 +59,15 @@ function daysBetween(a: number, b: number) {
   return Math.round((b - a) / DAY_MS);
 }
 
-function buildRange(items: Task[]) {
+function buildRange(items: Task[], todayIso: string) {
+  if (!items.length) {
+    const today = parseDay(todayIso);
+    return {
+      rangeStart: addDays(today, -7),
+      rangeEnd: addDays(today, 21),
+      totalDays: 28,
+    };
+  }
   const starts = items.map((t) => parseDay(t.startDate));
   const ends = items.map((t) => parseDay(t.endDate));
   const rangeStart = addDays(Math.min(...starts), -3);
@@ -82,6 +77,29 @@ function buildRange(items: Task[]) {
     rangeEnd,
     totalDays: daysBetween(rangeStart, rangeEnd),
   };
+}
+
+function orderTasks(tasks: Task[]): Task[] {
+  const byId = new Map(tasks.map((t) => [t.id, t]));
+  const depth = new Map<string, number>();
+  const visiting = new Set<string>();
+  function walk(id: string): number {
+    if (depth.has(id)) return depth.get(id)!;
+    if (visiting.has(id)) return 0;
+    visiting.add(id);
+    const task = byId.get(id);
+    const d =
+      !task || task.blockedBy.length === 0
+        ? 0
+        : 1 + Math.max(0, ...task.blockedBy.map(walk));
+    visiting.delete(id);
+    depth.set(id, d);
+    return d;
+  }
+  for (const t of tasks) walk(t.id);
+  return [...tasks].sort(
+    (a, b) => (depth.get(a.id) ?? 0) - (depth.get(b.id) ?? 0) || a.title.localeCompare(b.title),
+  );
 }
 
 function monthSpans(rangeStart: number, rangeEnd: number) {
@@ -121,26 +139,20 @@ function weekTicks(rangeStart: number, totalDays: number) {
 export function TimelineView() {
   const scrollerRef = useRef<HTMLDivElement>(null);
   const todayRef = useRef<HTMLDivElement>(null);
+  const { data, loading, error } = useTaskGraph();
+  const todayIso = useMemo(() => new Date().toISOString().slice(0, 10), []);
 
-  const ordered = [
-    "start",
-    "research",
-    "proto-1",
-    "proto-2",
-    "proto-3",
-    "decision",
-    "implement",
-    "deploy",
-  ]
-    .map((id) => tasks.find((t) => t.id === id))
-    .filter((t): t is Task => Boolean(t));
+  const ordered = useMemo(
+    () => orderTasks(data?.tasks ?? []),
+    [data?.tasks],
+  );
 
-  const { rangeStart, rangeEnd, totalDays } = buildRange(ordered);
+  const { rangeStart, rangeEnd, totalDays } = buildRange(ordered, todayIso);
   const width = totalDays * DAY_WIDTH;
   const months = monthSpans(rangeStart, rangeEnd);
   const ticks = weekTicks(rangeStart, totalDays);
-  const todayOffset = daysBetween(rangeStart, parseDay(TIMELINE_TODAY));
-  const todayDay = new Date(parseDay(TIMELINE_TODAY)).getUTCDate();
+  const todayOffset = daysBetween(rangeStart, parseDay(todayIso));
+  const todayDay = new Date(parseDay(todayIso)).getUTCDate();
 
   useLayoutEffect(() => {
     const scroller = scrollerRef.current;
@@ -150,6 +162,33 @@ export function TimelineView() {
       today.offsetLeft - scroller.clientWidth * 0.35;
     scroller.scrollLeft = Math.max(0, target);
   }, [todayOffset]);
+
+  if (loading && !data) {
+    return (
+      <div className="flex h-full items-center justify-center bg-canvas text-[13px] text-muted-foreground">
+        Loading timeline…
+      </div>
+    );
+  }
+
+  if (error && !data) {
+    return (
+      <div className="flex h-full items-center justify-center bg-canvas px-6 text-center text-[13px] text-red-600">
+        {error}
+      </div>
+    );
+  }
+
+  if (!ordered.length) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-2 bg-canvas px-6 text-center">
+        <p className="text-[13px] font-medium text-foreground">No schedule yet</p>
+        <p className="max-w-sm text-xs text-muted-foreground">
+          Once the Agent drafts the project graph, tasks will show up here.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div ref={scrollerRef} className="h-full overflow-auto bg-canvas">
@@ -231,8 +270,7 @@ export function TimelineView() {
                     parseDay(task.startDate),
                     parseDay(task.endDate),
                   ) + 1;
-                const Icon =
-                  kindIconOverride[task.id] ?? kindIcon[task.kind];
+                const Icon = kindIcon[task.kind];
                 const openEnded =
                   task.status === "open" || task.status === "running";
 

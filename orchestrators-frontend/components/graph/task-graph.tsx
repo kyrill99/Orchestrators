@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import {
   Background,
@@ -13,44 +13,46 @@ import {
   type NodeMouseHandler,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { edges as fixtureEdges, tasks } from "@/lib/fixtures";
 import { nodeTypes, type GraphNodeData } from "@/components/graph/nodes";
 import { fetchActiveRuns } from "@/lib/api";
-
-const layout: Record<string, { x: number; y: number }> = {
-  start: { x: 420, y: 0 },
-  research: { x: 380, y: 120 },
-  "proto-1": { x: 80, y: 280 },
-  "proto-2": { x: 380, y: 280 },
-  "proto-3": { x: 680, y: 280 },
-  decision: { x: 400, y: 460 },
-  implement: { x: 380, y: 620 },
-  deploy: { x: 400, y: 760 },
-};
-
-const initialNodes: Node[] = tasks.map((task) => ({
-  id: task.id,
-  type: task.kind,
-  position: layout[task.id] ?? { x: 0, y: 0 },
-  data: {
-    title: task.title,
-    kind: task.kind,
-    status: task.status,
-  } satisfies GraphNodeData,
-}));
-
-const initialEdges: Edge[] = fixtureEdges.map((edge) => ({
-  id: edge.id,
-  source: edge.source,
-  target: edge.target,
-  type: "smoothstep",
-  style: { stroke: "#e4e4e7", strokeWidth: 1.25 },
-}));
+import { layoutGraph } from "@/lib/taskgraph-api";
+import { useTaskGraph } from "@/lib/use-task-graph";
 
 export function TaskGraph() {
   const router = useRouter();
-  const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
-  const [edges, , onEdgesChange] = useEdgesState(initialEdges);
+  const { data, error, loading } = useTaskGraph();
+
+  const built = useMemo(() => {
+    const tasks = data?.tasks ?? [];
+    const edges = data?.edges ?? [];
+    const positions = layoutGraph(tasks, edges);
+    const nodes: Node[] = tasks.map((task) => ({
+      id: task.id,
+      type: task.kind,
+      position: positions[task.id] ?? { x: 0, y: 0 },
+      data: {
+        title: task.title,
+        kind: task.kind,
+        status: task.status,
+      } satisfies GraphNodeData,
+    }));
+    const flowEdges: Edge[] = edges.map((edge) => ({
+      id: edge.id,
+      source: edge.source,
+      target: edge.target,
+      type: "smoothstep",
+      style: { stroke: "#e4e4e7", strokeWidth: 1.25 },
+    }));
+    return { nodes, edges: flowEdges };
+  }, [data]);
+
+  const [nodes, setNodes, onNodesChange] = useNodesState(built.nodes);
+  const [edges, setEdges, onEdgesChange] = useEdgesState(built.edges);
+
+  useEffect(() => {
+    setNodes(built.nodes);
+    setEdges(built.edges);
+  }, [built, setNodes, setEdges]);
 
   // Mark tasks an agent is working on (from the live backend graph).
   useEffect(() => {
@@ -76,6 +78,34 @@ export function TaskGraph() {
     },
     [router],
   );
+
+  if (loading && !data) {
+    return (
+      <div className="flex h-full items-center justify-center bg-canvas text-[13px] text-muted-foreground">
+        Loading graph…
+      </div>
+    );
+  }
+
+  if (error && !data) {
+    return (
+      <div className="flex h-full items-center justify-center bg-canvas px-6 text-center text-[13px] text-red-600">
+        {error}
+      </div>
+    );
+  }
+
+  if (!built.nodes.length) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-2 bg-canvas px-6 text-center">
+        <p className="text-[13px] font-medium text-foreground">No tasks yet</p>
+        <p className="max-w-sm text-xs text-muted-foreground">
+          Talk to the Agent about goals and success. When the strategy is clear,
+          it will create the project graph here.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="h-full w-full bg-canvas">

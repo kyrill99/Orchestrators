@@ -29,10 +29,27 @@ See [`.env.example`](.env.example). Required / expected keys:
 | --- | --- |
 | `GEMINI_API_KEY` | Google Gemini API access |
 | `GRADIUM_API_KEY` | Gradium API access |
-| `MEMORY_PATH` | Memory directory (optional, default `data/memory`) |
+| `DATABASE_PATH` | Shared SQLite file (default `data/orchestrators.db`) |
+| `TASKGRAPH_STORE` | `sqlite` (default) or `jsonl` |
+| `MEMORY_STORE` | `sqlite` (default) or `markdown` |
+| `TASKGRAPH_PATH` | JSONL log; also one-time import source into SQLite |
+| `MEMORY_PATH` | Markdown memory dir; also one-time import source into SQLite |
 | `CORS_ORIGINS` | Origins allowed to call the API (optional, default `http://localhost:3000`) |
 
 Never commit `.env`.
+
+## Persistence (SQLite)
+
+By default the task graph and memory live in one SQLite file (`DATABASE_PATH`), shared by the FastAPI process and MCP servers (WAL mode). Legacy JSONL/markdown backends remain selectable via `TASKGRAPH_STORE` / `MEMORY_STORE`.
+
+On first SQLite start, existing `TASKGRAPH_PATH` / `MEMORY_PATH` data is imported once (recorded in `storage_imports`; source files are left in place).
+
+```bash
+.venv/bin/python -m storage info              # row counts + imports
+.venv/bin/python -m storage backup backups/   # online consistent copy
+```
+
+Per-user state (`GET/PUT /api/me/state/...`) also uses the same database.
 
 ## Run
 
@@ -51,6 +68,8 @@ API docs (when the FastAPI app is running): [http://localhost:8000/docs](http://
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/health` | Liveness |
+| `GET` | `/api/me` | Signed-in user (oauth2-proxy header or `DEV_USER_EMAIL`) |
+| `GET/PUT/DELETE` | `/api/me/state/...` | Per-user JSON preferences |
 | `POST` | `/api/voice/token` | Mint a short-lived Gradium WebSocket token (STT/TTS) |
 | `POST` | `/api/agent/chat` | Strategy agent reply via Gemini (`message`, optional `previous_interaction_id`) |
 
@@ -66,13 +85,16 @@ Voice flow: the browser asks for a token, opens Gradium STT/TTS WebSockets with 
 
 ```
 orchestrators-backend/
-  main.py            # FastAPI app entry (and temporary Gemini smoke script)
+  main.py            # FastAPI app entry
+  db.py              # shared SQLite helper
+  storage.py         # backend factory, import, backup CLI
+  userstate.py       # /api/me and per-user state
   services/
     gradium.py       # Gradium browser token minting
     agent.py         # Gemini strategy chat + tool loop
     agent_tools.py   # memory/taskgraph tool dispatch (MCP vocabulary)
-  taskgraph/         # task graph: service, REST, MCP (see taskgraph/API.md)
-  memory/            # memory across sessions: service, REST, MCP (see memory/API.md)
+  taskgraph/         # task graph: service, REST, MCP, sqlite_store
+  memory/            # memory: service, REST, MCP, sqlite_store
   strategy_interview/  # objective interview & strategy picture (see its README)
   tests/
   requirements.txt
