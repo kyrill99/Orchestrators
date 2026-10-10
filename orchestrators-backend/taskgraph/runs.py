@@ -34,6 +34,8 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
+from agent_identity import system_prompt
+
 from .models import Actor, AgentRun, RunStatus, Task
 from .service import TaskGraphError, TaskGraphService
 
@@ -83,6 +85,10 @@ def render_prompt(run: AgentRun, task: Task) -> str:
         "",
         f"You are agent '{run.agent.id}', run {run.id} (attempt {run.attempt}).",
         "Report progress with add_comment on this task and finish with finish_run.",
+        "",
+        "---",
+        "",
+        system_prompt("worker"),
     ]
     return "\n".join(lines) + "\n"
 

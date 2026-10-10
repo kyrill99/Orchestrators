@@ -114,6 +114,7 @@ orchestrators-backend/
     agent_tools.py   # memory/taskgraph tool dispatch (MCP vocabulary)
   taskgraph/         # task graph: service, REST, MCP, sqlite_store
   memory/            # memory: service, REST, MCP, sqlite_store
+  agent_identity/    # who Orchestrators is + role cards; every agent's prompt starts here
   strategy_interview/  # objective interview & strategy picture (see its README)
   tests/
   requirements.txt

@@ -15,6 +15,7 @@ from typing import Any, Literal
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
+from agent_identity import system_prompt
 from memory import mcp_server as memory_mcp
 from memory.service import MemoryService
 
@@ -64,7 +65,7 @@ def build_server(
     """With `memory`, the planner also gets the memory tools on this server.
     `runs` executes agent runs; by default runs are only recorded."""
     runs = runs if runs is not None else RunManager(service)
-    instructions = INSTRUCTIONS
+    instructions = system_prompt("planner") + "\n\n## Tools\n\n" + INSTRUCTIONS
     if memory is not None:
         instructions += "\n\n" + memory_mcp.INSTRUCTIONS
     server = MCPServer("orchestrators-taskgraph", instructions=instructions)
