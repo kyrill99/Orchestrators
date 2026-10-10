@@ -2,6 +2,7 @@
 
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { Ban } from "lucide-react";
 import { getAssignee, loadAssignee } from "@/lib/assignees";
 import type { Task, TaskStatus } from "@/lib/fixtures";
 import { useTaskGraph } from "@/lib/use-task-graph";
@@ -14,10 +15,17 @@ import { presenceColor, useTaskPresence } from "@/lib/presence";
 const DAY_MS = 86_400_000;
 const MIN_DAY_WIDTH = 36;
 const MIN_RANGE_DAYS = 28;
-const ROW_HEIGHT = 56;
+const ROW_HEIGHT = 72;
 const HEADER_HEIGHT = 56;
 const CHART_PAD_X = 24; // px-6
 const MIN_BAR_WIDTH = 200;
+const BAR_HEIGHT = 36; // h-9
+/** Vertical center of a bar within its row. */
+const BAR_MID_Y = ROW_HEIGHT / 2;
+/** Indent from the start of the blocker (not its end). */
+const DEP_CASCADE_INDENT = 48;
+/** Blocked-by links: Linear-ish red. */
+const DEP_STROKE = "#E5484D";
 const MONTH_NAMES = [
   "January",
   "February",
@@ -31,6 +39,21 @@ const MONTH_NAMES = [
   "October",
   "November",
   "December",
+];
+
+const MONTH_SHORT = [
+  "Jan",
+  "Feb",
+  "Mar",
+  "Apr",
+  "May",
+  "Jun",
+  "Jul",
+  "Aug",
+  "Sep",
+  "Oct",
+  "Nov",
+  "Dec",
 ];
 
 const statusAccent: Record<TaskStatus, string> = {
@@ -76,7 +99,7 @@ function buildRange(items: Task[], todayIso: string) {
   };
 }
 
-function orderTasks(tasks: Task[]): Task[] {
+function dependencyDepths(tasks: Task[]): Map<string, number> {
   const byId = new Map(tasks.map((t) => [t.id, t]));
   const depth = new Map<string, number>();
   const visiting = new Set<string>();
@@ -94,6 +117,10 @@ function orderTasks(tasks: Task[]): Task[] {
     return d;
   }
   for (const t of tasks) walk(t.id);
+  return depth;
+}
+
+function orderTasks(tasks: Task[], depth: Map<string, number>): Task[] {
   return [...tasks].sort(
     (a, b) =>
       (depth.get(a.id) ?? 0) - (depth.get(b.id) ?? 0) ||
@@ -137,9 +164,27 @@ function weekTicks(rangeStart: number, totalDays: number) {
 
 /** Rough content width so long titles stay visible without clipping the card. */
 function estimateBarContentWidth(task: Task) {
-  const idW = Math.max(task.id.length, 4) * 6.5;
   const titleW = task.title.length * 7.2;
-  return 20 + idW + 14 + titleW + 28 + 20;
+  return 20 + 14 + titleW + 28 + 20;
+}
+
+type Pt = { x: number; y: number };
+
+/** Point on a cubic Bézier at t ∈ [0, 1]. */
+function cubicAt(p0: Pt, p1: Pt, p2: Pt, p3: Pt, t: number): Pt {
+  const u = 1 - t;
+  return {
+    x:
+      u * u * u * p0.x +
+      3 * u * u * t * p1.x +
+      3 * u * t * t * p2.x +
+      t * t * t * p3.x,
+    y:
+      u * u * u * p0.y +
+      3 * u * u * t * p1.y +
+      3 * u * t * t * p2.y +
+      t * t * t * p3.y,
+  };
 }
 
 export function TimelineView() {
@@ -151,16 +196,21 @@ export function TimelineView() {
   const taskPresence = useTaskPresence();
   const todayIso = useMemo(() => new Date().toISOString().slice(0, 10), []);
 
-  const ordered = useMemo(
-    () => orderTasks(data?.tasks ?? []),
+  const depths = useMemo(
+    () => dependencyDepths(data?.tasks ?? []),
     [data?.tasks],
+  );
+  const ordered = useMemo(
+    () => orderTasks(data?.tasks ?? [], depths),
+    [data?.tasks, depths],
   );
 
   const { rangeStart, rangeEnd, totalDays } = buildRange(ordered, todayIso);
   const months = monthSpans(rangeStart, rangeEnd);
   const ticks = weekTicks(rangeStart, totalDays);
   const todayOffset = daysBetween(rangeStart, parseDay(todayIso));
-  const todayDay = new Date(parseDay(todayIso)).getUTCDate();
+  const todayDate = new Date(parseDay(todayIso));
+  const todayLabel = `${MONTH_SHORT[todayDate.getUTCMonth()]} ${todayDate.getUTCDate()}`;
 
   useLayoutEffect(() => {
     const scroller = scrollerRef.current;
@@ -181,14 +231,33 @@ export function TimelineView() {
   );
 
   const bars = useMemo(() => {
-    return ordered.map((task) => {
+    // Depth order so we can cascade each dependent to start after its blockers.
+    const draft = ordered.map((task, index) => {
       const start = daysBetween(rangeStart, parseDay(task.startDate));
       const duration =
         daysBetween(parseDay(task.startDate), parseDay(task.endDate)) + 1;
       const scheduleWidth = Math.max(duration * dayWidth, MIN_BAR_WIDTH);
       const width = Math.max(scheduleWidth, estimateBarContentWidth(task));
-      return { task, start, width, left: start * dayWidth };
+      return {
+        task,
+        index,
+        start,
+        width,
+        left: start * dayWidth,
+        midY: index * ROW_HEIGHT + BAR_MID_Y,
+      };
     });
+    const byId = new Map(draft.map((b) => [b.task.id, b]));
+    for (const bar of draft) {
+      let left = bar.left;
+      for (const blockerId of bar.task.blockedBy) {
+        const blocker = byId.get(blockerId);
+        if (!blocker) continue;
+        left = Math.max(left, blocker.left + DEP_CASCADE_INDENT);
+      }
+      bar.left = left;
+    }
+    return draft;
   }, [ordered, rangeStart, dayWidth]);
 
   const contentWidth = Math.max(
@@ -196,6 +265,75 @@ export function TimelineView() {
     ...bars.map((b) => b.left + b.width),
     available,
   );
+
+  /**
+   * Always back (right) of blocker → front (left) of blocked.
+   * Cascade layout keeps that hop short so curves stay readable.
+   */
+  const depPaths = useMemo(() => {
+    const byId = new Map(bars.map((b) => [b.task.id, b]));
+    const seen = new Set<string>();
+    const siblingOrd = new Map<string, number>();
+    const paths: {
+      id: string;
+      d: string;
+      midX: number;
+      midY: number;
+      label: string;
+    }[] = [];
+
+    const add = (blockerId: string, blockedId: string, edgeId: string) => {
+      const key = `${blockerId}>${blockedId}`;
+      if (seen.has(key)) return;
+      const blocker = byId.get(blockerId);
+      const blocked = byId.get(blockedId);
+      if (!blocker || !blocked) return;
+      seen.add(key);
+
+      const ord = siblingOrd.get(blockerId) ?? 0;
+      siblingOrd.set(blockerId, ord + 1);
+
+      // Back of blocker → front of blocked. Control points stay on each
+      // endpoint’s x and pull almost the full dy so the S is nearly
+      // vertical in the ~48px cascade gap.
+      const p0: Pt = {
+        x: blocker.left + blocker.width,
+        y: blocker.midY,
+      };
+      const p3: Pt = { x: blocked.left, y: blocked.midY };
+      const dy = p3.y - p0.y;
+      const fan = ord * 3;
+      const p1: Pt = {
+        x: p0.x + fan,
+        y: p0.y + dy * 0.95,
+      };
+      const p2: Pt = {
+        x: p3.x + fan,
+        y: p3.y - dy * 0.95,
+      };
+
+      const mid = cubicAt(p0, p1, p2, p3, 0.5);
+      const d = `M ${p0.x} ${p0.y} C ${p1.x} ${p1.y}, ${p2.x} ${p2.y}, ${p3.x} ${p3.y}`;
+
+      paths.push({
+        id: edgeId,
+        d,
+        midX: mid.x,
+        midY: mid.y,
+        label: `Blocked by ${blocker.task.title}`,
+      });
+    };
+
+    for (const edge of data?.edges ?? []) {
+      add(edge.source, edge.target, edge.id);
+    }
+    for (const bar of bars) {
+      for (const blocker of bar.task.blockedBy) {
+        add(blocker, bar.task.id, `blocked-${blocker}-${bar.task.id}`);
+      }
+    }
+    return paths;
+  }, [bars, data?.edges]);
 
   useLayoutEffect(() => {
     const scroller = scrollerRef.current;
@@ -305,17 +443,52 @@ export function TimelineView() {
               aria-hidden
             >
               <div className="absolute top-1 left-1/2 flex -translate-x-1/2 items-center justify-center">
-                <span className="flex size-6 items-center justify-center rounded-full bg-sky-500 text-[11px] font-semibold text-white shadow-sm">
-                  {todayDay}
+                <span className="flex h-6 items-center justify-center rounded-full bg-[#5E6AD2] px-2 text-[11px] font-semibold whitespace-nowrap text-white shadow-sm">
+                  {todayLabel}
                 </span>
               </div>
-              <div className="absolute top-8 bottom-0 left-1/2 w-px -translate-x-1/2 bg-sky-500" />
+              <div className="absolute top-8 bottom-0 left-1/2 w-px -translate-x-1/2 bg-[#5E6AD2]" />
             </div>
 
             <ul
               className="relative"
               style={{ minHeight: ordered.length * ROW_HEIGHT }}
             >
+              {depPaths.length > 0 ? (
+                <>
+                  <svg
+                    className="pointer-events-none absolute top-0 left-0 z-[1]"
+                    width={contentWidth}
+                    height={ordered.length * ROW_HEIGHT}
+                    aria-hidden
+                  >
+                    {depPaths.map((path) => (
+                      <path
+                        key={path.id}
+                        d={path.d}
+                        fill="none"
+                        stroke={DEP_STROKE}
+                        strokeOpacity={0.85}
+                        strokeWidth={2}
+                        strokeLinecap="round"
+                        strokeDasharray="0.1 6"
+                      />
+                    ))}
+                  </svg>
+                  {depPaths.map((path) => (
+                    <span
+                      key={`${path.id}-badge`}
+                      className="pointer-events-none absolute z-[2] flex size-5 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-[#E5484D] text-white shadow-sm"
+                      style={{ left: path.midX, top: path.midY }}
+                      title={path.label}
+                      aria-hidden
+                    >
+                      <Ban className="size-3" strokeWidth={2.5} />
+                    </span>
+                  ))}
+                </>
+              ) : null}
+
               {bars.map(({ task, left, width }, index) => {
                 const openEnded =
                   task.status === "open" || task.status === "running";
@@ -332,14 +505,14 @@ export function TimelineView() {
                     <Link
                       href={`/tasks/${task.id}`}
                       className={cn(
-                        "absolute top-2.5 flex h-9 items-center gap-2 rounded-full bg-neutral-100 py-0 pr-2.5 pl-2.5 text-left text-foreground transition-[box-shadow,transform] hover:-translate-y-px hover:shadow-md",
+                        "absolute z-[2] flex h-9 items-center gap-2 rounded-full bg-neutral-100 py-0 pr-2.5 pl-2.5 text-left text-foreground transition-[box-shadow,transform] hover:-translate-y-px hover:shadow-md",
                         statusAccent[task.status],
                         openEnded && "border border-dashed border-neutral-300",
                       )}
                       style={{
                         left,
                         width,
-                        zIndex: 1,
+                        top: (ROW_HEIGHT - BAR_HEIGHT) / 2,
                         boxShadow: editor
                           ? `0 0 0 2px ${presenceColor(editor.email)}`
                           : undefined,
@@ -353,9 +526,6 @@ export function TimelineView() {
                         }}
                         aria-hidden
                       />
-                      <span className="relative z-[1] shrink-0 font-mono text-[11px] text-muted-foreground tabular-nums">
-                        {task.id}
-                      </span>
                       <StatusIcon
                         status={task.status}
                         className="relative z-[1] size-3.5 shrink-0"

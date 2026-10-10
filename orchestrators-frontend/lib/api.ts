@@ -58,6 +58,8 @@ export type ConversationSummary = {
   last_message: ConversationMessage | null;
   /** The agent is answering right now. */
   thinking: boolean;
+  /** Project the conversation belongs to (missing = "default"). */
+  project?: string;
 };
 
 export type ConversationDetail = ConversationSummary & {

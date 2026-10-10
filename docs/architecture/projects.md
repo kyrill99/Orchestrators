@@ -96,9 +96,11 @@ only shows teammates in the same project.
 
 ## Bug reports
 
-Creating an issue (`POST /api/issues`) also creates a task `Bug: <title>` in the
-`orchestrators` project graph, with the issue reference in its description, so it
-shows up in that project's graph, timeline and can be picked up by a worker.
+The `orchestrators` project has one standing task, `work-open-issues` ("Work through
+open issues"), created at startup. Its brief tells the task agent to go through the open
+issues (list, investigate, comment, close). When a human files a bug (an issue becomes
+open), the task gets a comment "New issue #n: ..." and is reopened if it was done, so
+the engine picks it up again. Issues filed by task agents do not wake it.
 
 ## Risks / follow-ups
 
@@ -111,3 +113,11 @@ shows up in that project's graph, timeline and can be picked up by a worker.
   so they see project and global memories but not anyone's personal ones.
 - Issues created through the MCP server (not the FastAPI app) do not become tasks.
 - `python -m storage backup` copies only the main DB, not `data/projects/*.db`.
+
+## Agent conversations
+
+Conversations belong to a project (`conversations.project`, added by migration; old ones
+are `default`). `GET /api/conversations` lists only the current project's; live
+`conversation` events carry `project` and the frontend ignores other projects'. When a
+message is posted, the planner runs in the **conversation's** project (not the poster's
+cookie), so its tools, board summary and project brief always match that chat.

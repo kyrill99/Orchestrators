@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { ArrowLeft, Ban, Bot, User, Activity } from "lucide-react";
+import { ArrowLeft, Ban, Bot, User, Activity, PenSquare } from "lucide-react";
 import type { Task, TaskActivity, TaskStatus } from "@/lib/fixtures";
 import {
   loadAssignee,
@@ -12,6 +12,7 @@ import {
 import { fetchTask, setTaskStatus } from "@/lib/taskgraph-api";
 import { AssigneePicker } from "@/components/task/assignee-picker";
 import { OwnerActions } from "@/components/task/owner-actions";
+import { TaskEditor } from "@/components/task/task-editor";
 import { AgentActivity } from "@/components/task/agent-activity";
 import { RunControl } from "@/components/task/run-control";
 import { StatusPicker } from "@/components/task/status-picker";
@@ -42,6 +43,7 @@ export function TaskIssuePage({ id }: { id: string }) {
   // Live cursors over the page, and a re-fetch whenever this task changes.
   const scrollRef = useRef<HTMLDivElement>(null);
   const [version, setVersion] = useState(0);
+  const [editing, setEditing] = useState<boolean>(false);
   useChannel("graph", (type, data) => {
     const ids = (data as { taskIds?: string[] } | null)?.taskIds;
     if (type === "resync" || ids?.includes(id)) setVersion((v) => v + 1);
@@ -214,15 +216,37 @@ export function TaskIssuePage({ id }: { id: string }) {
             <p className="mb-2 text-xs text-destructive">{statusError}</p>
           ) : null}
 
-          <h1 className="text-xl font-semibold tracking-[-0.02em] text-foreground">
-            {task.title}
-          </h1>
+          {editing ? (
+            <TaskEditor
+              task={task}
+              onCancel={() => setEditing(false)}
+              onSaved={() => {
+                setEditing(false);
+                setVersion((v) => v + 1);
+              }}
+              onDeleted={() => window.location.assign("/project")}
+            />
+          ) : (
+            <div className="flex items-start gap-2">
+              <h1 className="text-xl font-semibold tracking-[-0.02em] text-foreground">
+                {task.title}
+              </h1>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="ml-auto shrink-0"
+                onClick={() => setEditing(true)}
+              >
+                <PenSquare className="size-3.5" /> Edit
+              </Button>
+            </div>
+          )}
 
           <div className="mt-4">
             <OwnerActions taskId={task.id} />
           </div>
-          {task.description ? (
-            <p className="mt-3 text-[13px] leading-relaxed text-muted-foreground">
+          {task.description && !editing ? (
+            <p className="mt-3 whitespace-pre-wrap text-[13px] leading-relaxed text-muted-foreground">
               {task.description}
             </p>
           ) : null}

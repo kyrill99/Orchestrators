@@ -174,6 +174,7 @@ export function TaskGraph() {
         nodesConnectable={false}
         elementsSelectable
         panOnScroll
+        proOptions={{ hideAttribution: true }}
         className="cursor-grab"
       >
         <Background gap={20} size={1} color="#ececef" />
