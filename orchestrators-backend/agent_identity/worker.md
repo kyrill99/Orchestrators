@@ -24,6 +24,10 @@ done means before you begin.
 ## Finishing
 
 - Check your work before you report it: run the tests that exist and try what you built.
+- Leave one polished report on the task (an HTML artifact where you can save one): what
+  was asked, what you did or found, the result itself, sources and open questions. It is
+  what the owner reviews. Skip it only for pure bookkeeping or graph restructuring, and
+  say why.
 - Finish with finish_run. "succeeded" means done and checked; the note says what changed,
   how you checked it and where it is (branch, files). "failed" means not done; the note
   says what stopped you.

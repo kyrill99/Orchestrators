@@ -4,8 +4,8 @@
     TASKGRAPH_RUNNER_CMD="python -m taskgraph.worker"
 
 Reads the task brief on stdin, looks at what the tasks it depended on produced,
-asks Gemini for the deliverable, posts it as a comment, saves it as an artifact
-under data/artifacts/ and exits 0. The runner then records the run as succeeded
+asks Gemini for the deliverable, posts it as a comment, saves it as a markdown
+task artifact (artifacts.py, listed on the task page) and exits 0. The runner then records the run as succeeded
 and the task moves to in-review for the owner to approve or send back.
 Without GEMINI_API_KEY it writes a clearly marked placeholder so the loop still
 runs in a demo.
@@ -114,12 +114,16 @@ def main() -> int:
     try:
         task = svc.task(task_id)
         output = _generate(brief, _upstream_results(svc, task), _comments(task))
-        out_dir = Path(os.environ.get("WORKER_ARTIFACTS", "data/artifacts"))
-        out_dir.mkdir(parents=True, exist_ok=True)
-        rel = str(out_dir / f"{task_id}-{run_id}.md")
-        Path(rel).write_text(f"# {task['title']}\n\n{output}\n", encoding="utf-8")
+        from artifacts import ArtifactStore
+        from storage import default_db
+
+        store = ArtifactStore(default_db()).scoped(os.environ.get("TASKGRAPH_PROJECT") or "default")
+        meta, _ = store.save(task_id, f"{run_id}-result.md", f"# {task['title']}\n\n{output}\n",
+                             title=f"{task['title']}: result", kind="markdown", run_id=run_id,
+                             created_by=me.id)
+        rel = meta["viewUrl"]
         artifacts = [Artifact.model_validate(a) for a in task.get("artifacts", [])]
-        artifacts.append(Artifact(path=rel, label=f"{run_id} result"))
+        artifacts.append(Artifact(path=rel, label=meta["title"]))
         body = output if len(output) <= MAX_COMMENT else output[:MAX_COMMENT] + f"\n\n… (full result: {rel})"
         svc.submit(me, [
             AddComment(task_id=task_id, body=body),

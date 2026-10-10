@@ -16,6 +16,8 @@ from services.agent_tools import AgentTools
 from services.gemini_worker import GeminiRunner
 from services.gradium import create_browser_token
 
+from artifacts import ArtifactStore
+from artifacts import build_router as build_artifacts_router
 from changelog import build_router as build_changelog_router
 from conversations import CHANNEL as CONVERSATIONS_CHANNEL
 from conversations import ConversationService, ConversationStore
@@ -103,6 +105,10 @@ app.include_router(build_memory_router(memory, taskgraph))
 issues = IssueService(db)
 app.include_router(build_issues_router(issues))
 
+# Task artifacts (HTML reports from agents); files under data/artifacts (ARTIFACTS_PATH).
+artifact_store = ArtifactStore(db)
+app.include_router(build_artifacts_router(artifact_store))
+
 
 # Agent runs: a Gemini agent per run, in this process, when GEMINI_API_KEY is
 # set (services/gemini_worker.py; TASKGRAPH_RUNNER overrides, e.g. "subprocess"
@@ -118,7 +124,8 @@ def _project_parts(pid: str, service: TaskGraphService, pdb: Database, db_path: 
     runlog = RunLog(pdb, _publish_run_event)
     scratchpads = Scratchpads(pdb, _publish_run_event)
     def _gemini() -> GeminiRunner:
-        gemini = GeminiRunner(service, runlog, scratchpads, memory=memory, issues=issues)
+        gemini = GeminiRunner(service, runlog, scratchpads, memory=memory, issues=issues,
+                              artifacts=artifact_store.scoped(pid))
         gemini.project_brief = lambda: projects.brief(pid)  # type: ignore[attr-defined]
         # Runs happen outside a request, so the worker's memory is told its project.
         gemini.project_id = pid  # type: ignore[attr-defined]
@@ -128,8 +135,7 @@ def _project_parts(pid: str, service: TaskGraphService, pdb: Database, db_path: 
     if hasattr(runner, "env"):  # subprocess worker (TASKGRAPH_RUNNER=subprocess)
         runner.env.update({"TASKGRAPH_PROJECT": pid})
         if db_path:
-            runner.env.update({"TASKGRAPH_DB": db_path,
-                               "WORKER_ARTIFACTS": str(PROJECTS_DIR / f"{pid}-artifacts")})
+            runner.env.update({"TASKGRAPH_DB": db_path})
             if hasattr(runner, "log_dir"):
                 runner.log_dir = PROJECTS_DIR / f"{pid}-runs"
     manager = RunManager(service, runner)

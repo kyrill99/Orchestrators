@@ -9,6 +9,7 @@ Env:  TASKGRAPH_STORE, TASKGRAPH_PATH, DATABASE_PATH  storage, see storage.py
       TASKGRAPH_RUNNER, TASKGRAPH_RUNNER_CMD, TASKGRAPH_RUN_LOGS  see runs.py
       MEMORY_PATH, MEMORY_PROJECT_ID, MEMORY_USER_ID  see memory/mcp_server.py
       DATABASE_PATH, ISSUES_PATH  issue list (see issues.py)
+      ARTIFACTS_PATH  task artifact files (see artifacts.py)
 """
 
 from __future__ import annotations
@@ -29,6 +30,8 @@ from .runs import RunManager, runner_from_env
 from .service import TaskGraphService
 
 if TYPE_CHECKING:
+    from artifacts import ProjectArtifacts
+
     from .engine import Engine
     from .runlog import RunLog, Scratchpads
 
@@ -53,7 +56,10 @@ limit) in the API server; engine_stop stops dispatching (stop_runs also stops
 active runs); engine_status shows state, active runs, the queue and `waiting`
 (why nothing is starting: review, decisions, blocked tasks, autonomy).
 Each task has a markdown scratchpad (read_scratchpad / write_scratchpad /
-append_scratchpad) that its agents use as working memory across runs."""
+append_scratchpad) that its agents use as working memory across runs.
+Workers leave their result as an HTML report on the task: list_artifacts shows a
+task's files, read_artifact returns one's content (to review it or brief the
+next task)."""
 
 
 def build_server(
@@ -66,6 +72,7 @@ def build_server(
     runlog: RunLog | None = None,
     scratchpads: Scratchpads | None = None,
     engine: Engine | None = None,
+    artifacts: ProjectArtifacts | None = None,
 ) -> MCPServer:
     """With `memory`, the planner also gets the memory tools on this server.
     `runs` executes agent runs; by default runs are only recorded. Without
@@ -85,7 +92,7 @@ def build_server(
     ctx = ToolContext(
         taskgraph=service, actor=Actor(type="agent", id=agent_id), memory=memory,
         runs=runs if runs is not None else RunManager(service),
-        runlog=runlog, scratchpads=scratchpads, engine=engine,
+        runlog=runlog, scratchpads=scratchpads, engine=engine, artifacts=artifacts,
     )
     register_mcp(server, planner_tools(ctx))
     return server
@@ -102,18 +109,23 @@ def main() -> None:
     memory = MemoryService(open_memory_store(db))
     runlog, scratchpads = RunLog(db), Scratchpads(db)
     issues = issues_mcp.service_from_env()
+    from artifacts import ArtifactStore
+
+    artifacts = ArtifactStore(db).scoped("default")
 
     def gemini():
         from services.gemini_worker import GeminiRunner
 
-        return GeminiRunner(service, runlog, scratchpads, memory=memory, issues=issues)
+        return GeminiRunner(service, runlog, scratchpads, memory=memory, issues=issues,
+                            artifacts=artifacts)
 
     runs = RunManager(service, runner_from_env(gemini))
     # Control only: the API server's engine loop does the dispatching.
     engine = Engine(service, runs, db)
     agent_id = os.environ.get("TASKGRAPH_AGENT_ID", "planner")
     build_server(service, agent_id, memory, runs, issues,
-                 runlog=runlog, scratchpads=scratchpads, engine=engine).run("stdio")
+                 runlog=runlog, scratchpads=scratchpads, engine=engine,
+                 artifacts=artifacts).run("stdio")
 
 
 if __name__ == "__main__":

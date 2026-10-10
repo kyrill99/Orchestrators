@@ -63,7 +63,7 @@ up the work. Put substantial results there or in the task description, not only 
 - Post short progress notes with add_comment when you reach a milestone, and set \
 progress with update_my_task.
 - You have no shell and no file system. Use google_search for facts you are unsure of \
-and code_execution for calculations.
+and code_execution for calculations. save_artifact stores files on your task.
 - Split off follow-up work you will not do now with create_subtask.
 - Only ask a human (request_decision) about strategy: goals, priorities, success \
 criteria. Decide implementation details yourself. After asking, finish with outcome \
@@ -71,7 +71,50 @@ criteria. Decide implementation details yourself. After asking, finish with outc
 - Use recall before asking anything memory might answer, and remember lasting lessons.
 - Be efficient: you have a limited number of steps. Do not narrate; act.
 - End with finish_run(outcome, summary) exactly once. 'succeeded' sends the task to \
-human review."""
+human review.
+
+## Your report
+
+The owner reviews your work through one HTML report. Before finish_run, save it with \
+save_artifact(filename="report.html", title=<what it is>, content=<the page>); that \
+also lists it on the task.
+- It holds the deliverable itself, not a summary of it: what was asked, what you did or \
+found, the full result (comparison tables, recommendation and why, the text, the plan), \
+sources (the pages google_search gave you, as links) and open questions.
+- Self-contained: inline CSS; no external images, fonts or stylesheets. The page cannot \
+fetch anything when viewed, so put all data in it. For charts prefer inline SVG or CSS \
+bars; at most one library from https://cdn.jsdelivr.net if you need it.
+- Polished: clean typography, a readable column, tables for comparisons, light and dark \
+mode, print-friendly. Start from this skeleton and keep its style:
+
+```html
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TITLE</title><base target="_blank">
+<style>
+:root{color-scheme:light dark;--fg:#1d1d1f;--muted:#6e6e73;--bg:#fff;--line:#e5e5ea;--accent:#2563eb}
+@media (prefers-color-scheme:dark){:root{--fg:#f2f2f4;--muted:#a1a1a8;--bg:#151517;--line:#2d2d32;--accent:#7aa7ff}}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.65 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:780px;margin:0 auto;padding:48px 24px 64px}
+h1{font-size:2rem;line-height:1.2;letter-spacing:-.02em;margin:0 0 .3em}
+h2{font-size:1.15rem;margin:2.2em 0 .7em;padding-bottom:.35em;border-bottom:1px solid var(--line)}
+.meta{color:var(--muted);font-size:.9rem}
+.answer{border-left:3px solid var(--accent);padding:.7em 1em;border-radius:0 8px 8px 0;background:color-mix(in srgb,var(--accent) 8%,transparent)}
+table{border-collapse:collapse;width:100%;font-size:.94rem}
+th,td{text-align:left;vertical-align:top;padding:.55em .6em;border-bottom:1px solid var(--line)}
+th{font-weight:600}a{color:var(--accent)}
+@media print{main{padding:0;max-width:none}a{color:inherit}h2,tr{break-inside:avoid}}
+</style></head><body><main>
+<h1>TITLE</h1><p class="meta">TASK ID · DATE</p>
+<p class="answer">The answer or outcome in two or three sentences.</p>
+<h2>What was asked</h2>… <h2>What I did</h2>… <h2>Result</h2>…
+<h2>Sources</h2>… <h2>Open questions</h2>…
+</main></body></html>
+```
+
+- Then finish_run with a short summary that names the report ("Report: <title>").
+- Skip the report only when there is nothing to read: pure bookkeeping or restructuring \
+the graph. Then say in the summary why there is no report."""
 
 NUDGE = (
     "[engine] You replied without calling a tool. Continue the task with your tools, "
@@ -111,6 +154,7 @@ class GeminiRunner:
         *,
         memory: MemoryService | None = None,
         issues: Any = None,
+        artifacts: Any = None,
         client_factory: Callable[[], Any] | None = None,
         model: str | None = None,
         max_steps: int | None = None,
@@ -123,6 +167,7 @@ class GeminiRunner:
         self.scratchpads = scratchpads
         self.memory = memory
         self.issues = issues  # IssueService: workers can read and file issues
+        self.artifacts = artifacts  # artifacts.ProjectArtifacts: reports saved on the task
         self.client_factory = client_factory or _default_client
         self.model = model or os.environ.get("GEMINI_WORKER_MODEL", MODEL)
         self.max_steps = max_steps if max_steps is not None else _env_int("GEMINI_WORKER_MAX_STEPS", 40)
@@ -205,7 +250,7 @@ class _Loop:
             project_id=getattr(runner, "project_id", None),  # set per project in main.py
             toolset=lambda ctx: worker_tools(ctx, run_id=run.id, task_id=task.id),
             runs=RunManager(runner.service), scratchpads=runner.scratchpads, runlog=runner.runlog,
-            issues=runner.issues,
+            issues=runner.issues, artifacts=runner.artifacts,
         )
 
     def log(self, kind: str, payload: dict[str, Any]) -> None:

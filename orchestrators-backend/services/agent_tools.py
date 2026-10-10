@@ -17,7 +17,8 @@ derives a narrower tool (fixed or defaulted arguments, fewer parameters) for
 the worker instead of a copy-pasted variant.
 
 Tool sets: `interview_tools` (memory + graph reads/writes, + issues), `planner_tools`
-(graph + run control + scratchpad + engine) and `worker_tools` (one task).
+(graph + run control + scratchpad + engine + artifact reads) and `worker_tools`
+(one task, + saving artifacts).
 """
 
 from __future__ import annotations
@@ -59,6 +60,7 @@ from taskgraph.models import (
 from taskgraph.service import TaskGraphError, TaskGraphService
 
 if TYPE_CHECKING:
+    from artifacts import ProjectArtifacts
     from taskgraph.engine import Engine
     from taskgraph.runlog import RunLog, Scratchpads
     from taskgraph.runs import RunManager
@@ -227,6 +229,7 @@ class ToolContext:
     runlog: RunLog | None = None
     engine: Engine | None = None
     issues: IssueService | None = None
+    artifacts: ProjectArtifacts | None = None
     project_id: str | None = None  # None: the active project (MemoryService decides)
     user_id: str = DEFAULT_ID
 
@@ -425,7 +428,8 @@ def graph_write_tools(ctx: ToolContext) -> list[ToolDef]:
             current = fields.get("artifacts") or [
                 Artifact.model_validate(a) for a in ctx.tg.task(task_id)["artifacts"]
             ]
-            fields["artifacts"] = [*current, *add_artifacts]
+            # One entry per path; a re-added path takes the new label.
+            fields["artifacts"] = list({a.path: a for a in [*current, *add_artifacts]}.values())
         if not fields:
             raise TaskGraphError("invalid", "nothing to update")
         try:
@@ -706,6 +710,56 @@ def issue_tools(ctx: ToolContext) -> list[ToolDef]:
 
 
 # --------------------------------------------------------------------------
+# Artifacts (files on a task, mostly HTML reports; artifacts.py)
+# --------------------------------------------------------------------------
+
+ArtifactKind = Literal["html", "markdown", "json", "csv", "text", "svg"]
+
+
+def artifact_tools(ctx: ToolContext) -> list[ToolDef]:
+    def store() -> ProjectArtifacts:
+        return ctx.need("artifacts")
+
+    def save_artifact(
+        task_id: str,
+        filename: str,
+        content: str,
+        title: str,
+        kind: ArtifactKind = "html",
+        run_id: str | None = None,
+    ) -> dict:
+        """Save a file (max 2 MB) on a task and list it in the task's artifacts,
+        where the owner opens it. kind 'html' for reports. Saving the same
+        filename again in the same run replaces it."""
+        ctx.tg.task(task_id)
+        meta, _ = store().save(task_id, filename, content, title=title, kind=kind,
+                               run_id=run_id, created_by=ctx.actor.id)
+        entry = Artifact(path=meta["viewUrl"], label=meta["title"])
+        current = [Artifact.model_validate(a) for a in ctx.tg.task(task_id)["artifacts"]]
+        if entry not in current:
+            others = [a for a in current if a.path != entry.path]
+            ctx.submit([UpdateTask(task_id=task_id, artifacts=[*others, entry])],
+                       f"artifact: {meta['title']}")
+        out = {k: meta[k] for k in ("id", "filename", "title", "kind", "size", "viewUrl")}
+        return {**out, "note": "saved and listed in the task's artifacts"}
+
+    def list_artifacts(task_id: str) -> list[dict]:
+        """Files saved on a task (reports and other artifacts): id, title, kind,
+        size, run, created by and when, view URL."""
+        ctx.tg.task(task_id)
+        return store().list(task_id)
+
+    def read_artifact(artifact_id: str, max_chars: int = 50_000) -> dict:
+        """One artifact's metadata and its content as text (truncated to max_chars)."""
+        meta, text = store().read_text(artifact_id)
+        if len(text) > max_chars:
+            text = text[:max_chars] + f"\n… [{len(text) - max_chars} more characters]"
+        return {**meta, "content": text}
+
+    return [tool(f) for f in (save_artifact, list_artifacts, read_artifact)]
+
+
+# --------------------------------------------------------------------------
 # Tool sets
 # --------------------------------------------------------------------------
 
@@ -734,8 +788,9 @@ def interview_tools(ctx: ToolContext) -> list[ToolDef]:
 def planner_tools(ctx: ToolContext) -> list[ToolDef]:
     """The planner over MCP: graph, run control, scratchpads and the engine.
     (Memory tools come from memory.mcp_server on the same server.)"""
+    reads = [t for t in artifact_tools(ctx) if t.name != "save_artifact"]
     return [*graph_read_tools(ctx), *graph_write_tools(ctx), *run_tools(ctx),
-            *scratchpad_tools(ctx), *engine_tools(ctx)]
+            *scratchpad_tools(ctx), *engine_tools(ctx), *reads]
 
 
 def worker_tools(ctx: ToolContext, *, run_id: str, task_id: str) -> list[ToolDef]:
@@ -743,7 +798,7 @@ def worker_tools(ctx: ToolContext, *, run_id: str, task_id: str) -> list[ToolDef
     update its own task, create subtasks and relations, ask a human, use
     memory and the scratchpad, and finish its run."""
     t = by_name([*memory_tools(ctx), *graph_read_tools(ctx), *graph_write_tools(ctx),
-                 *run_tools(ctx), *scratchpad_tools(ctx)])
+                 *run_tools(ctx), *scratchpad_tools(ctx), *artifact_tools(ctx)])
     mine = {"task_id": task_id}
     tools = [
         bind(t["get_task"], defaults=mine,
@@ -773,6 +828,14 @@ def worker_tools(ctx: ToolContext, *, run_id: str, task_id: str) -> list[ToolDef
                          "summary: plan, findings, open questions, next steps."),
         bind(t["append_scratchpad"], fixed=mine,
              description="Append `text` (markdown) to your task's scratchpad."),
+        bind(t["save_artifact"], fixed={**mine, "run_id": run_id},
+             description="Save a file on your task, listed in its artifacts for the owner to open "
+                         "(max 2 MB). kind 'html' (default) for your report: one self-contained page. "
+                         "Saving the same filename again replaces it. It is added to the task's "
+                         "artifacts for you; do not add it with update_my_task."),
+        bind(t["list_artifacts"], defaults=mine,
+             description="Files saved on a task (default: yours), e.g. reports of the tasks before it."),
+        t["read_artifact"],
         t["get_context"],
         t["recall"],
         t["remember"],
@@ -783,6 +846,8 @@ def worker_tools(ctx: ToolContext, *, run_id: str, task_id: str) -> list[ToolDef
     ]
     if ctx.memory is None:
         tools = [x for x in tools if x.name not in ("get_context", "recall", "remember")]
+    if ctx.artifacts is None:
+        tools = [x for x in tools if x.name not in ("save_artifact", "list_artifacts", "read_artifact")]
     if ctx.issues is not None:
         tools += issue_tools(ctx)
     return tools
