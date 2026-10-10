@@ -10,6 +10,8 @@ from google import genai
 from pydantic import BaseModel, Field
 
 from services.agent import chat as agent_chat
+from services.agent import configure_tools
+from services.agent_tools import AgentTools
 from services.gradium import create_browser_token
 
 from changelog import build_router as build_changelog_router
@@ -50,6 +52,9 @@ memory = MemoryService(
     GeminiDistiller(MODEL) if os.environ.get("GEMINI_API_KEY") else None,
 )
 app.include_router(build_memory_router(memory, taskgraph))
+
+# Interview chat uses the same memory/taskgraph ops as MCP, in-process.
+configure_tools(AgentTools(memory, taskgraph))
 
 # Must match DATA in deploy/gcp/update.sh.
 app.include_router(build_selfupdate_router("data"))

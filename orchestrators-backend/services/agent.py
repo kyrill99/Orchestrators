@@ -1,14 +1,18 @@
-"""Strategy-interview agent powered by Gemini."""
+"""Strategy-interview agent powered by Gemini, with memory + taskgraph tools."""
 
 from __future__ import annotations
 
+import json
 import os
 from typing import Any, Literal
 
 from fastapi import HTTPException
 from google import genai
 
+from services.agent_tools import AgentTools, result_as_text
+
 MODEL = "gemini-3.8-flash"
+MAX_TOOL_ROUNDS = 8
 
 Mode = Literal["text", "voice"]
 
@@ -23,6 +27,15 @@ that should guide the work.
 You never ask about implementation: no tools, stacks, architectures or "A or B?" technical \
 choices. Agents decide those once they understand the strategy. If the owner drifts into \
 detail, steer back to what the detail is for.
+
+You have silent tools for memory and the task graph. Use them; never name them or narrate \
+calling them to the owner.
+- Call recall (or get_context) before asking a question memory might already answer.
+- Call remember when the owner states a goal, priority, success criterion, preference or \
+correction.
+- Read the task graph when you need project context; write to it (create or update tasks, \
+comments, strategy decisions) only when the strategy is clear enough to capture or hand off.
+- Prefer memory over asking again. Prefer confirming a good guess over an open question.
 
 Your character:
 - Calm, curious and direct, like a good editor or a seasoned partner at a small firm.
@@ -58,6 +71,14 @@ links. Say numbers the way you would speak them. End with one question unless yo
 wrapping up.""",
 }
 
+_tools: AgentTools | None = None
+
+
+def configure_tools(tools: AgentTools | None) -> None:
+    """Attach shared memory/taskgraph tools (called from main.py at startup)."""
+    global _tools
+    _tools = tools
+
 
 def instructions(mode: Mode) -> str:
     return f"{CHARACTER}\n\n{STYLE[mode]}"
@@ -72,6 +93,55 @@ def _client() -> genai.Client:
     return genai.Client()
 
 
+def _output_text(interaction: Any) -> str:
+    reply = getattr(interaction, "output_text", None) or ""
+    if reply:
+        return reply.strip()
+    if getattr(interaction, "outputs", None):
+        for part in interaction.outputs or []:
+            if getattr(part, "text", None):
+                return part.text.strip()
+    # Prefer model_output steps when present (Interactions schema).
+    for step in getattr(interaction, "steps", None) or []:
+        if getattr(step, "type", None) == "model_output" and getattr(step, "text", None):
+            return str(step.text).strip()
+        if getattr(step, "type", None) == "text" and getattr(step, "text", None):
+            return str(step.text).strip()
+    return ""
+
+
+def _function_calls(interaction: Any) -> list[Any]:
+    steps = getattr(interaction, "steps", None) or []
+    calls = [s for s in steps if getattr(s, "type", None) == "function_call"]
+    if calls:
+        return calls
+    # Legacy / alternate: function_call in outputs
+    for part in getattr(interaction, "outputs", None) or []:
+        if getattr(part, "type", None) == "function_call":
+            calls.append(part)
+    return calls
+
+
+def _call_args(step: Any) -> dict[str, Any]:
+    raw = getattr(step, "arguments", None)
+    if raw is None:
+        raw = getattr(step, "args", None)
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+    return dict(raw or {})
+
+
+def _call_id(step: Any) -> str:
+    return str(
+        getattr(step, "id", None)
+        or getattr(step, "call_id", None)
+        or getattr(step, "name", "call")
+    )
+
+
 def chat(
     message: str,
     *,
@@ -84,11 +154,14 @@ def chat(
         raise HTTPException(status_code=400, detail="message is required")
 
     client = _client()
+    tools = _tools.declarations() if _tools is not None else None
     kwargs: dict[str, Any] = {
         "model": MODEL,
         "input": text,
         "system_instruction": instructions(mode),
     }
+    if tools:
+        kwargs["tools"] = tools
     if mode == "voice":
         # Low thinking answers in ~3 s instead of ~5 s with no loss we could hear.
         kwargs["generation_config"] = {"thinking_level": "low"}
@@ -103,14 +176,40 @@ def chat(
             detail=f"Gemini request failed: {exc}",
         ) from exc
 
-    reply = getattr(interaction, "output_text", None) or ""
-    if not reply and getattr(interaction, "outputs", None):
-        for part in interaction.outputs or []:
-            if getattr(part, "text", None):
-                reply = part.text
-                break
+    rounds = 0
+    while _tools is not None and tools and rounds < MAX_TOOL_ROUNDS:
+        calls = _function_calls(interaction)
+        if not calls:
+            break
+        rounds += 1
+        results: list[dict[str, Any]] = []
+        for step in calls:
+            name = getattr(step, "name", None) or ""
+            payload = _tools.dispatch(name, _call_args(step))
+            results.append(
+                {
+                    "type": "function_result",
+                    "name": name,
+                    "call_id": _call_id(step),
+                    "result": [{"type": "text", "text": result_as_text(payload)}],
+                }
+            )
+        try:
+            interaction = client.interactions.create(
+                model=MODEL,
+                previous_interaction_id=interaction.id,
+                input=results,
+                tools=tools,
+                system_instruction=instructions(mode),
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(
+                status_code=502,
+                detail=f"Gemini tool follow-up failed: {exc}",
+            ) from exc
 
+    reply = _output_text(interaction)
     return {
-        "reply": reply.strip() or "I’m listening — tell me more about the goal.",
+        "reply": reply or "I’m listening — tell me more about the goal.",
         "interaction_id": interaction.id,
     }
