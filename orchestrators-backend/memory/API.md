@@ -11,6 +11,12 @@ What the agents learn and keep across sessions. One `MemoryService` behind REST
 | `user` | owner preferences that hold across projects | `users/<userId>/` |
 | `global` | lessons about how the orchestrator itself should behave | `global/` |
 
+`global` is one set shared by all projects and everyone. `user` is personal and goes with
+the person into every project. `project` belongs to one project: wherever `projectId` is
+left out, it is the active project (the `orch_project` cookie; see
+`docs/architecture/projects.md`), so switching project switches the project memories
+and keeps the other two.
+
 ## Model
 
 Memories are stored in SQLite by default (`memories` and `memory_log` tables; see
@@ -54,7 +60,7 @@ create / update / use / feedback. The id is the same either way.
 | `PATCH /memories/{id}` | `{actor, title?, body?, tags?, confidence?, status?}` |
 | `DELETE /memories/{id}` | archive |
 | `POST /memories/{id}/feedback` | `{actor, helpful, note?}` |
-| `GET /tree` | folders and files for the Memory page |
+| `GET /tree?projectId=` | folders and files for the Memory page: this project, the signed-in user's, then all projects |
 | `GET /stats`, `GET /log?limit=` | counts and helpful rate; the learning log |
 
 Errors: `{code, message}` with 404 not_found, 503 unavailable, 422 invalid.

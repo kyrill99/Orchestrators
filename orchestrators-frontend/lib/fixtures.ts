@@ -62,6 +62,8 @@ export type MemoryFile = {
 export type MemoryFolder = {
   id: string;
   name: string;
+  /** From the backend: "This project · strategy", "Personal · …", "All projects · …". */
+  label?: string;
   files: MemoryFile[];
 };
 

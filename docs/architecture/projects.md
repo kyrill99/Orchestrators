@@ -15,8 +15,23 @@ is where.
 - Every existing API keeps working unchanged (no per-call-site changes).
 
 Non-goals (for now): permissions per project, moving tasks between projects,
-per-project memory (memory stays shared across projects, which is the point of
-memory), deleting projects.
+deleting projects.
+
+## Memory
+
+Memory has three scopes (see `orchestrators-backend/memory/API.md`):
+
+| scope | shared with | follows |
+|---|---|---|
+| `project` | nobody outside the project | the active project (same cookie / contextvar as the task graph) |
+| `user` | all projects of that person | the signed-in user |
+| `global` | all projects, everyone | nothing; one shared set |
+
+`MemoryService` is built with `project=current_project.get`, so any call without an
+explicit `project_id` reads and writes the request's project. Runs happen outside a
+request: each project's `GeminiRunner` carries its `project_id` and passes it on.
+Subprocess / MCP workers use `TASKGRAPH_PROJECT`. Memories written before projects
+existed sit under `projects/default` and stay with the default project.
 
 ## How the active project travels
 
@@ -92,8 +107,7 @@ shows up in that project's graph, timeline and can be picked up by a worker.
 - MCP server processes (outside FastAPI) still use the default project unless
   started with `TASKGRAPH_DB`/`TASKGRAPH_PROJECT`.
 - No auth per project: anyone signed in sees all projects.
-- Memory is shared and dedupes synced decisions/changesets by task or changeset id,
-  which are only unique per project: a decision in project B with the same id as one
-  already synced from another project is skipped. Fix: prefix refs with the project id.
+- Task workers read memory as user `default`, not as the person who owns the project,
+  so they see project and global memories but not anyone's personal ones.
 - Issues created through the MCP server (not the FastAPI app) do not become tasks.
 - `python -m storage backup` copies only the main DB, not `data/projects/*.db`.

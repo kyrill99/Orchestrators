@@ -81,7 +81,7 @@ export function MemoryExplorer() {
                 <div key={folder.id} className="mb-2">
                   <div className="mb-0.5 flex items-center gap-1.5 px-2 py-1 text-[11px] font-medium text-muted-foreground">
                     <Folder className="size-3" strokeWidth={1.75} />
-                    {folder.name}
+                    {folder.label ?? folder.name}
                   </div>
                   <ul>
                     {folder.files.map((file) => (

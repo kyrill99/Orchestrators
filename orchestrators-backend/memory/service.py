@@ -51,6 +51,8 @@ SCOPE_HEADINGS = {
     "global": "Orchestrator lessons",
 }
 
+TREE_LABELS = {"project": "This project", "user": "Personal", "global": "All projects"}
+
 _STOPWORDS = frozenset(
     "the and for with that this are was not but you our from have has what which "
     "should about into than then when will can more".split()
@@ -114,10 +116,17 @@ class MemoryService:
         distiller: Distiller | None = None,
         *,
         clock: Callable[[], str] = _utcnow,
+        project: Callable[[], str] | None = None,
     ) -> None:
+        """`project` names the active project (the app passes the request's
+        project); it is used wherever a call gives no `project_id`."""
         self.store = store
         self.distiller = distiller
         self.clock = clock
+        self.current_project = project or (lambda: DEFAULT_ID)
+
+    def _project(self, project_id: str | None) -> str:
+        return project_id or self.current_project()
 
     # ------------------------------------------------------------------
     # reads
@@ -153,21 +162,48 @@ class MemoryService:
         self,
         query: str,
         *,
-        project_id: str = DEFAULT_ID,
+        project_id: str | None = None,
         user_id: str = DEFAULT_ID,
         kind: MemoryKind | None = None,
         limit: int = 5,
     ) -> list[Memory]:
         """Best matches among the memories that apply to this project and owner."""
-        visible = self._visible(self.store.load(), project_id, user_id)
-        return self._rank([m for m in visible if kind is None or m.kind == kind], query)[:limit]
+        visible = self.visible(project_id=project_id, user_id=user_id, kind=kind)
+        return self._rank(visible, query)[:limit]
 
-    def tree(self) -> list[dict[str, Any]]:
-        """Folder/file view for the Memory page (frontend `MemoryFolder[]`)."""
+    def visible(
+        self,
+        *,
+        project_id: str | None = None,
+        user_id: str = DEFAULT_ID,
+        scope: Scope | None = None,
+        kind: MemoryKind | None = None,
+    ) -> list[Memory]:
+        """Active memories that apply to this project and owner: the project's
+        own, the owner's, and the global ones. Other projects' are left out."""
+        return [
+            m for m in self._visible(self.store.load(), self._project(project_id), user_id)
+            if (scope is None or m.scope == scope) and (kind is None or m.kind == kind)
+        ]
+
+    def tree(
+        self, project_id: str | None = None, user_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Folder/file view for the Memory page (frontend `MemoryFolder[]`):
+        this project's memories, the personal ones (`user_id`'s only, when
+        given) and the ones shared by all projects, in that order."""
+        project_id = self._project(project_id)
         folders: dict[str, dict[str, Any]] = {}
         for m in self.list_memories():
+            if m.scope == "project" and m.project_id != project_id:
+                continue
+            if m.scope == "user" and user_id is not None and m.user_id != user_id:
+                continue
             folder, _, name = m.path.rpartition("/")
-            entry = folders.setdefault(folder, {"id": folder, "name": folder, "files": []})
+            entry = folders.setdefault(folder, {
+                "id": folder, "name": folder, "scope": m.scope,
+                "label": f"{TREE_LABELS[m.scope]} · {m.kind}", "files": [],
+            })
             entry["files"].append(
                 {
                     "id": m.id,
@@ -182,7 +218,7 @@ class MemoryService:
                     "updatedAt": m.updated_at,
                 }
             )
-        return [folders[k] for k in sorted(folders)]
+        return sorted(folders.values(), key=lambda f: (SCOPE_ORDER.index(f["scope"]), f["id"]))
 
     def stats(self) -> dict[str, Any]:
         memories = list(self.store.load().values())
@@ -209,7 +245,7 @@ class MemoryService:
     def context(
         self,
         *,
-        project_id: str = DEFAULT_ID,
+        project_id: str | None = None,
         user_id: str = DEFAULT_ID,
         query: str | None = None,
         limit: int = 5,
@@ -221,6 +257,7 @@ class MemoryService:
         learnings / decisions / notes for `query` (or the most trusted ones).
         Narrower scopes are picked first, so they survive a tight budget.
         """
+        project_id = self._project(project_id)
         with self.store.locked():
             visible = self._visible(self.store.load(), project_id, user_id)
             by_precedence = lambda m: (SCOPE_ORDER.index(m.scope), -m.confidence)  # noqa: E731
@@ -326,11 +363,12 @@ class MemoryService:
         actor: Actor,
         messages: Sequence[ChatMessage],
         *,
-        project_id: str = DEFAULT_ID,
+        project_id: str | None = None,
         user_id: str = DEFAULT_ID,
         ref: str | None = None,
     ) -> dict[str, Any]:
         """Distill a finished conversation into memory changes and apply them."""
+        project_id = self._project(project_id)
         if self.distiller is None:
             raise MemoryServiceError("unavailable", "no distiller configured (set GEMINI_API_KEY)")
         if not messages:
@@ -354,11 +392,13 @@ class MemoryService:
         return {"applied": applied, "skipped": skipped}
 
     def sync_from_taskgraph(
-        self, taskgraph: TaskGraphService, *, project_id: str = DEFAULT_ID
+        self, taskgraph: TaskGraphService, *, project_id: str | None = None
     ) -> list[Memory]:
         """Copy what the task graph already knows into project memory:
         resolved decisions, and agent changes the owner rejected with a note.
-        Safe to call repeatedly; each decision / changeset is stored once."""
+        Safe to call repeatedly; each decision / changeset is stored once per
+        project (task and changeset ids are only unique within a project)."""
+        project_id = self._project(project_id)
         decisions = taskgraph.decisions("resolved")
         rejected = [c for c in taskgraph.changesets("rejected") if c.get("reviewNote")]
         created: list[Memory] = []
@@ -447,7 +487,7 @@ class MemoryService:
         if not title.strip():
             raise MemoryServiceError("invalid", "title is required")
         if scope == "project":
-            project_id, user_id = project_id or DEFAULT_ID, None
+            project_id, user_id = self._project(project_id), None
             owner, prefix = project_id, f"projects.{project_id}"
         elif scope == "user":
             project_id, user_id = None, user_id or DEFAULT_ID

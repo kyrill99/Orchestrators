@@ -142,8 +142,9 @@ class CoreTest(MemoryTestCase):
 
     def test_tree_matches_frontend_shape(self):
         self.remember("Success criteria", "- a", "strategy")
-        (folder,) = self.mem.tree()
+        (folder,) = self.mem.tree(P)
         self.assertEqual(folder["name"], "projects/chunking/strategy")
+        self.assertEqual(folder["label"], "This project · strategy")
         f = folder["files"][0]
         self.assertEqual((f["name"], f["path"]), ("success-criteria.md",
                                                   "projects/chunking/strategy/success-criteria.md"))
@@ -217,6 +218,83 @@ class TaskGraphSyncTest(MemoryTestCase):
         self.assertEqual(len(self.mem.list_memories()), 2)
 
 
+class ProjectScopeTest(MemoryTestCase):
+    """Project memories follow the active project; user and global ones are shared."""
+
+    def setUp(self):
+        super().setUp()
+        self.active = "alpha"
+        self.mem.current_project = lambda: self.active
+
+    def put(self, title, kind="strategy", scope="project", user_id=U):
+        return self.mem.remember(H, title=title, body=f"{title} body", kind=kind, scope=scope,
+                                 user_id=user_id)
+
+    def test_project_memories_stay_in_their_project(self):
+        goal = self.put("Goal")
+        pref = self.put("Short updates", "preference", "user")
+        lesson = self.put("Ask for the metric first", "learning", "global")
+        self.assertEqual(goal.id, "projects.alpha.strategy.goal")
+
+        self.active = "beta"
+        self.assertEqual(self.mem.context(user_id=U)["memoryIds"], [pref.id, lesson.id])
+        self.assertEqual(self.mem.search("goal", user_id=U), [])
+        other = self.put("Goal")
+        self.assertEqual(other.id, "projects.beta.strategy.goal")
+        self.assertEqual({m.id for m in self.mem.visible(user_id=U)}, {other.id, pref.id, lesson.id})
+
+        self.active = "alpha"
+        self.assertEqual(self.mem.get(goal.id).body, "Goal body")
+        self.assertEqual(self.mem.context(user_id=U)["memoryIds"], [goal.id, pref.id, lesson.id])
+        # An explicit project still wins over the active one.
+        self.assertIn(other.id, self.mem.context(project_id="beta", user_id=U)["memoryIds"])
+
+    def test_tree_shows_this_project_personal_and_shared(self):
+        self.put("Goal")
+        self.put("Short updates", "preference", "user")
+        self.put("Long updates", "preference", "user", user_id="someone-else")
+        self.put("Ask for the metric first", "learning", "global")
+        self.active = "beta"
+        self.put("Other goal")
+        tree = self.mem.tree(user_id=U)
+        self.assertEqual([f["label"] for f in tree],
+                         ["This project · strategy", "Personal · preference", "All projects · learning"])
+        self.assertEqual([[x["title"] for x in f["files"]] for f in tree],
+                         [["Other goal"], ["Short updates"], ["Ask for the metric first"]])
+
+    def test_sync_keeps_same_task_id_apart(self):
+        graphs = {}
+        for pid, chosen in (("alpha", "semantic"), ("beta", "fixed windows")):
+            tg = graphs[pid] = TaskGraphService()
+            tg.submit(H, [CreateTask(id="d", title="Decision: which approach", kind="decision"),
+                          RequestDecision(task_id="d", question="Which?"),
+                          ResolveDecision(task_id="d", chosen=chosen, rationale="fits")])
+        for pid, tg in graphs.items():
+            self.active = pid
+            self.assertEqual(len(self.mem.sync_from_taskgraph(tg)), 1)
+            self.assertEqual(self.mem.sync_from_taskgraph(tg), [])
+        self.assertIn("semantic", self.mem.get("projects.alpha.decision.d").body)
+        self.assertIn("fixed windows", self.mem.get("projects.beta.decision.d").body)
+
+    def test_agent_tools_follow_the_active_project(self):
+        from services.agent_tools import AgentTools
+
+        os.environ.pop("MEMORY_PROJECT_ID", None)
+        tools = AgentTools(self.mem, TaskGraphService(), user_id=U)
+        saved = tools.dispatch("remember", {"title": "Goal", "body": "alpha goal", "kind": "strategy"})
+        self.assertEqual(saved["id"], "projects.alpha.strategy.goal")
+        tools.dispatch("remember", {"title": "Lesson", "body": "shared", "kind": "learning",
+                                    "scope": "global"})
+        self.active = "beta"
+        self.assertNotIn("alpha goal", tools.memory_context())
+        self.assertIn("shared", tools.memory_context())
+        self.assertEqual([m["id"] for m in tools.dispatch("list_memories", {})],
+                         ["global.learning.lesson"])
+        # A worker is bound to its project whatever request is active.
+        worker = AgentTools(self.mem, TaskGraphService(), project_id="alpha", user_id=U)
+        self.assertIn("alpha goal", worker.memory_context())
+
+
 class McpTest(MemoryTestCase):
     def test_tools_on_taskgraph_server(self):
         from taskgraph.mcp_server import build_server
@@ -259,7 +337,9 @@ class ApiTest(MemoryTestCase):
         self.assertEqual(c.get(f"/api/memory/memories/{mid}").json()["projectId"], P)
         self.assertEqual(len(c.get("/api/memory/memories", params={"q": "coherence"}).json()), 1)
         self.assertEqual(c.get("/api/memory/context", params={"projectId": P}).json()["memoryIds"], [mid])
-        self.assertEqual(c.get("/api/memory/tree").json()[0]["files"][0]["uses"], 1)
+        self.assertEqual(c.get("/api/memory/tree").json(), [])  # another project is active
+        tree = c.get("/api/memory/tree", params={"projectId": P}).json()
+        self.assertEqual(tree[0]["files"][0]["uses"], 1)
         r = c.post(f"/api/memory/memories/{mid}/feedback", json={"actor": actor, "helpful": False})
         self.assertEqual(r.json()["confidence"], 0.3)
         self.assertEqual(c.patch(f"/api/memory/memories/{mid}", json={"actor": actor, "body": "b"}).json()["body"], "b")
@@ -302,6 +382,10 @@ class SqliteReflectTest(Sqlite, ReflectTest):
 
 
 class SqliteTaskGraphSyncTest(Sqlite, TaskGraphSyncTest):
+    pass
+
+
+class SqliteProjectScopeTest(Sqlite, ProjectScopeTest):
     pass
 
 

@@ -226,7 +226,7 @@ class ToolContext:
     runlog: RunLog | None = None
     engine: Engine | None = None
     issues: IssueService | None = None
-    project_id: str = DEFAULT_ID
+    project_id: str | None = None  # None: the active project (MemoryService decides)
     user_id: str = DEFAULT_ID
 
     def need(self, what: str) -> Any:
@@ -281,8 +281,8 @@ def memory_tools(ctx: ToolContext) -> list[ToolDef]:
 
     def list_memories(scope: Scope | None = None, kind: MemoryKind | None = None) -> list[dict]:
         """List active memories, optionally by scope or kind."""
-        return mem().list_memories(scope=scope, kind=kind, project_id=ctx.project_id,
-                                   user_id=ctx.user_id)
+        return mem().visible(scope=scope, kind=kind, project_id=ctx.project_id,
+                             user_id=ctx.user_id)
 
     return [tool(f) for f in (get_context, recall, remember, memory_feedback, list_memories)]
 
@@ -789,7 +789,8 @@ class AgentTools:
         self.me = Actor(type="agent", id=self.agent_id)
         self.ctx = ToolContext(
             taskgraph=taskgraph, actor=self.me, memory=memory,
-            project_id=project_id or os.environ.get("MEMORY_PROJECT_ID", DEFAULT_ID),
+            # Unset: memory follows the project of the request (or the run's).
+            project_id=project_id or os.environ.get("MEMORY_PROJECT_ID"),
             user_id=user_id or os.environ.get("MEMORY_USER_ID", DEFAULT_ID),
             **services,
         )

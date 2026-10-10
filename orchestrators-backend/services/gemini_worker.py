@@ -202,6 +202,7 @@ class _Loop:
         self.live = live
         self.tools = AgentTools(
             runner.memory, runner.service, agent_id=run.agent.id,
+            project_id=getattr(runner, "project_id", None),  # set per project in main.py
             toolset=lambda ctx: worker_tools(ctx, run_id=run.id, task_id=task.id),
             runs=RunManager(runner.service), scratchpads=runner.scratchpads, runlog=runner.runlog,
             issues=runner.issues,
@@ -229,7 +230,8 @@ class _Loop:
         deadline = time.monotonic() + r.max_seconds
         base = {"model": r.model, "tools": tools, "system_instruction": worker_instructions(),
                 "generation_config": {"thinking_summaries": "auto"}}
-        input_: Any = build_brief(r.service, r.scratchpads, r.runlog, r.memory, self.run_, self.task)
+        input_: Any = build_brief(r.service, r.scratchpads, r.runlog, r.memory, self.run_, self.task,
+                                  project_id=getattr(r, "project_id", None))
         brief_fn = getattr(r, "project_brief", None)  # set per project in main.py
         if brief_fn is not None and isinstance(input_, str):
             try:
@@ -407,6 +409,8 @@ def build_brief(
     memory: MemoryService | None,
     run: AgentRun,
     task: Task,
+    *,
+    project_id: str | None = None,
 ) -> str:
     """The first message of a run: the task and everything needed to continue it."""
     detail = service.task(task.id)
@@ -462,7 +466,7 @@ def build_brief(
         lines += [f"- `{c.id}` {c.title}: {c.status}" for c in children]
     if memory is not None:
         try:
-            ctx = memory.context(query=task.title)
+            ctx = memory.context(project_id=project_id, query=task.title)
         except Exception:  # memory is a nice-to-have here
             ctx = {"text": ""}
         if ctx.get("text"):

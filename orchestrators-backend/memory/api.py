@@ -5,16 +5,18 @@
 
 from __future__ import annotations
 
+import os
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import Field
 
+from identity import current_user
 from taskgraph.models import Actor, Model
 from taskgraph.service import TaskGraphService
 
 from .models import ChatMessage, MemoryKind, MemorySource, MemoryStatus, Scope
-from .service import DEFAULT_ID, MemoryService, MemoryServiceError
+from .service import DEFAULT_ID, MemoryService, MemoryServiceError, user_key
 
 STATUS_FOR_CODE = {"not_found": 404, "unavailable": 503}
 
@@ -49,7 +51,7 @@ class FeedbackBody(Model):
 class ReflectBody(Model):
     actor: Actor
     messages: list[ChatMessage]
-    project_id: str = DEFAULT_ID
+    project_id: str | None = None  # default: the active project
     user_id: str = DEFAULT_ID
     ref: str | None = None
 
@@ -71,9 +73,11 @@ def build_router(service: MemoryService, taskgraph: TaskGraphService | None = No
         return _dump(out)
 
     @r.get("/tree")
-    def tree():
-        """Folders and files for the Memory page."""
-        return call(service.tree)
+    def tree(request: Request, projectId: str | None = None):
+        """Folders and files for the Memory page: the active project's memories
+        (or `projectId`'s), the signed-in user's, and the ones shared by all projects."""
+        user = os.environ.get("MEMORY_USER_ID") or user_key(current_user(request).email)
+        return call(service.tree, projectId, user)
 
     @r.get("/stats")
     def stats():
@@ -84,7 +88,7 @@ def build_router(service: MemoryService, taskgraph: TaskGraphService | None = No
         return call(service.log, limit)
 
     @r.get("/context")
-    def context(projectId: str = DEFAULT_ID, userId: str = DEFAULT_ID, q: str | None = None,
+    def context(projectId: str | None = None, userId: str = DEFAULT_ID, q: str | None = None,
                 limit: int = 5):
         """Prompt block for an agent session. Counts as a use of each memory in it."""
         return call(service.context, project_id=projectId, user_id=userId, query=q, limit=limit)
@@ -129,8 +133,9 @@ def build_router(service: MemoryService, taskgraph: TaskGraphService | None = No
     if taskgraph is not None:
 
         @r.post("/sync")
-        def sync(projectId: str = DEFAULT_ID):
-            """Pull resolved decisions and rejected changes from the task graph."""
+        def sync(projectId: str | None = None):
+            """Pull resolved decisions and rejected changes from the active
+            project's task graph into that project's memory."""
             return call(service.sync_from_taskgraph, taskgraph, project_id=projectId)
 
     return r

@@ -44,7 +44,7 @@ from taskgraph.runs import RunManager, runner_from_env
 from taskgraph.sqlite_store import SqliteEventStore
 from projects import DEFAULT as DEFAULT_PROJECT
 from projects import ORCHESTRATORS as ORCHESTRATORS_PROJECT
-from projects import ProjectGraphs, ProjectMiddleware, ProjectRegistry, ScopedProxy
+from projects import ProjectGraphs, ProjectMiddleware, ProjectRegistry, ScopedProxy, current_project
 from projects import build_router as build_projects_router
 from userstate import UserStateStore
 from userstate import build_router as build_userstate_router
@@ -94,6 +94,8 @@ taskgraph = ScopedProxy(lambda: project_graphs.pair()[0])
 memory = MemoryService(
     open_memory_store(db),
     GeminiDistiller(MODEL) if os.environ.get("GEMINI_API_KEY") else None,
+    # Project-scope memories belong to the request's project (orch_project cookie).
+    project=current_project.get,
 )
 app.include_router(build_memory_router(memory, taskgraph))
 
@@ -118,6 +120,8 @@ def _project_parts(pid: str, service: TaskGraphService, pdb: Database, db_path: 
     def _gemini() -> GeminiRunner:
         gemini = GeminiRunner(service, runlog, scratchpads, memory=memory, issues=issues)
         gemini.project_brief = lambda: projects.brief(pid)  # type: ignore[attr-defined]
+        # Runs happen outside a request, so the worker's memory is told its project.
+        gemini.project_id = pid  # type: ignore[attr-defined]
         return gemini
 
     runner = runner_from_env(_gemini)

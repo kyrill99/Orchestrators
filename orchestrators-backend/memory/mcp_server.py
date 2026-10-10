@@ -5,7 +5,8 @@ the planner has one connection. Standalone:
 
 Run:  python -m memory.mcp_server
 Env:  MEMORY_STORE, MEMORY_PATH, DATABASE_PATH  storage, see storage.py
-      MEMORY_PROJECT_ID  project the agent works on (default: default)
+      MEMORY_PROJECT_ID  project the agent works on (default: TASKGRAPH_PROJECT,
+                         then default)
       MEMORY_USER_ID     project owner (default: default)
       MEMORY_AGENT_ID    agent id recorded on changes (default: planner)
 """
@@ -52,7 +53,9 @@ def register_tools(
     user_id: str | None = None,
 ) -> None:
     me = Actor(type="agent", id=agent_id)
-    project = project_id or os.environ.get("MEMORY_PROJECT_ID", DEFAULT_ID)
+    # A worker started for a project gets TASKGRAPH_PROJECT (see projects.md).
+    project = (project_id or os.environ.get("MEMORY_PROJECT_ID")
+               or os.environ.get("TASKGRAPH_PROJECT") or DEFAULT_ID)
     user = user_id or os.environ.get("MEMORY_USER_ID", DEFAULT_ID)
 
     def run(fn, *args, **kwargs) -> Any:
