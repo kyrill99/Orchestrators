@@ -3,7 +3,6 @@
 import dynamic from "next/dynamic";
 import { useState } from "react";
 import { TimelineView } from "@/components/timeline/timeline-view";
-import { ProgressPanel } from "@/components/project/progress-panel";
 import { cn } from "@/lib/utils";
 
 const TaskGraph = dynamic(
@@ -43,13 +42,8 @@ export function ProjectWorkspace() {
         </div>
       </div>
 
-      <div className="flex min-h-0 flex-1">
-        <div className="min-w-0 flex-1">
-          {mode === "graph" ? <TaskGraph /> : <TimelineView />}
-        </div>
-        <div className="hidden h-full shrink-0 md:flex">
-          <ProgressPanel />
-        </div>
+      <div className="min-h-0 flex-1">
+        {mode === "graph" ? <TaskGraph /> : <TimelineView />}
       </div>
     </div>
   );
