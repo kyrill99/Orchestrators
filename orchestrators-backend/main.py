@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from services.agent import chat as agent_chat
 from services.gradium import create_browser_token
 
+from changelog import build_router as build_changelog_router
 from memory import MarkdownMemoryStore, MemoryService
 from memory.api import build_router as build_memory_router
 from memory.distill import GeminiDistiller
@@ -49,6 +50,7 @@ app.include_router(build_memory_router(memory, taskgraph))
 
 # Must match DATA in deploy/gcp/update.sh.
 app.include_router(build_selfupdate_router("data"))
+app.include_router(build_changelog_router("data"))
 
 
 class ChatRequest(BaseModel):

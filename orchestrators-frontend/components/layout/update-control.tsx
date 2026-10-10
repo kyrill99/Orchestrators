@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { apiBaseUrl } from "@/lib/api";
+import { ChangelogSheet } from "@/components/layout/changelog-sheet";
 import { cn } from "@/lib/utils";
 
 type UpdateStatus = {
@@ -19,6 +20,7 @@ type UpdateStatus = {
 /** Self-update: POST /api/admin/update, then poll until the run settles. */
 export function UpdateControl() {
   const [status, setStatus] = useState<UpdateStatus | null>(null);
+  const [changelogOpen, setChangelogOpen] = useState(false);
 
   const refresh = useCallback(() => {
     fetch(`${apiBaseUrl()}/api/admin/update`)
@@ -66,20 +68,30 @@ export function UpdateControl() {
           {note}
         </span>
       )}
-      <button
-        type="button"
-        onClick={update}
-        disabled={busy}
-        className="flex items-center gap-2 rounded-md py-1 transition-colors hover:text-foreground disabled:opacity-60"
-        title="Pull the latest code, rebuild and restart"
-      >
-        <RefreshCw
-          className={cn("size-3.5 shrink-0", busy && "animate-spin")}
-          strokeWidth={1.75}
-        />
-        Update
-        <span className="ml-auto font-mono text-[11px]">{status.commit}</span>
-      </button>
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={update}
+          disabled={busy}
+          className="flex items-center gap-2 rounded-md py-1 transition-colors hover:text-foreground disabled:opacity-60"
+          title="Pull the latest code, rebuild and restart"
+        >
+          <RefreshCw
+            className={cn("size-3.5 shrink-0", busy && "animate-spin")}
+            strokeWidth={1.75}
+          />
+          Update
+        </button>
+        <button
+          type="button"
+          onClick={() => setChangelogOpen(true)}
+          className="ml-auto rounded-md py-1 font-mono text-[11px] underline-offset-2 transition-colors hover:text-foreground hover:underline"
+          title="Show recent changes"
+        >
+          {status.commit ?? "changelog"}
+        </button>
+      </div>
+      <ChangelogSheet open={changelogOpen} onOpenChange={setChangelogOpen} />
     </div>
   );
 }
