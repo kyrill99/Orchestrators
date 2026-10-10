@@ -4,7 +4,7 @@
 the planner has one connection. Standalone:
 
 Run:  python -m memory.mcp_server
-Env:  MEMORY_PATH        memory directory (default: data/memory)
+Env:  MEMORY_STORE, MEMORY_PATH, DATABASE_PATH  storage, see storage.py
       MEMORY_PROJECT_ID  project the agent works on (default: default)
       MEMORY_USER_ID     project owner (default: default)
       MEMORY_AGENT_ID    agent id recorded on changes (default: planner)
@@ -22,7 +22,6 @@ from taskgraph.models import Actor
 
 from .models import MemoryKind, MemorySource, Scope
 from .service import DEFAULT_ID, MemoryService, MemoryServiceError
-from .store import MarkdownMemoryStore
 
 INSTRUCTIONS = """Memory holds what is already known about the owner, this project and
 how to orchestrate well. Call get_context when you start. Call recall before you ask
@@ -39,7 +38,9 @@ def _dump(out: Any) -> Any:
 
 
 def service_from_env() -> MemoryService:
-    return MemoryService(MarkdownMemoryStore(os.environ.get("MEMORY_PATH", "data/memory")))
+    from storage import open_memory_store
+
+    return MemoryService(open_memory_store())
 
 
 def register_tools(

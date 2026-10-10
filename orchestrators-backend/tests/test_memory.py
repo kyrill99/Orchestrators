@@ -6,7 +6,9 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from db import Database  # noqa: E402
 from memory import ChatMessage, MarkdownMemoryStore, MemoryService, MemoryServiceError, ReflectOp  # noqa: E402
+from memory.sqlite_store import SqliteMemoryStore  # noqa: E402
 from taskgraph import Actor, TaskGraphService  # noqa: E402
 from taskgraph.models import CreateTask, RequestDecision, ResolveDecision  # noqa: E402
 
@@ -29,7 +31,11 @@ class MemoryTestCase(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.dir.cleanup)
-        self.mem = MemoryService(MarkdownMemoryStore(self.dir.name))
+        self.mem = MemoryService(self.open_store())
+
+    def open_store(self):
+        """A store on this test's location; called again for a 'second process'."""
+        return MarkdownMemoryStore(self.dir.name)
 
     def remember(self, title, body="body", kind="learning", scope="project", **kw):
         return self.mem.remember(H, title=title, body=body, kind=kind, scope=scope,
@@ -41,9 +47,10 @@ class CoreTest(MemoryTestCase):
         m = self.remember("Success criteria", "Coherence first: then latency.\n---\n- a", "strategy",
                           tags=["eval"])
         self.assertEqual(m.id, "projects.chunking.strategy.success-criteria")
-        self.assertTrue(os.path.exists(os.path.join(self.dir.name, "projects", "chunking",
-                                                    "strategy", "success-criteria.md")))
-        again = MemoryService(MarkdownMemoryStore(self.dir.name)).get(m.id)
+        if isinstance(self.mem.store, MarkdownMemoryStore):
+            self.assertTrue(os.path.exists(os.path.join(self.dir.name, "projects", "chunking",
+                                                        "strategy", "success-criteria.md")))
+        again = MemoryService(self.open_store()).get(m.id)
         self.assertEqual(again, m)
 
     def test_same_title_updates(self):
@@ -116,7 +123,7 @@ class CoreTest(MemoryTestCase):
         self.assertTrue(f["content"].startswith("# Success criteria"))
 
     def test_two_services_share_a_directory(self):
-        other = MemoryService(MarkdownMemoryStore(self.dir.name))
+        other = MemoryService(self.open_store())
         m = self.remember("Shared")
         other.feedback(A, m.id, True)
         self.assertEqual(self.mem.get(m.id).helpful, 1)
@@ -235,6 +242,48 @@ class ApiTest(MemoryTestCase):
         self.assertEqual(c.post("/api/memory/sync").json(), [])
         self.assertEqual(c.delete(f"/api/memory/memories/{mid}").json()["status"], "archived")
         self.assertEqual(c.get("/api/memory/stats").json()["archived"], 1)
+
+
+class Sqlite:
+    """Mixin: rerun a memory test case against SqliteMemoryStore."""
+
+    def open_store(self):
+        db = Database(os.path.join(self.dir.name, "memory.db"))  # one per "process"
+        self.addCleanup(db.close)
+        return SqliteMemoryStore(db)
+
+
+class SqliteCoreTest(Sqlite, CoreTest):
+    def test_order_and_log_match_markdown(self):
+        md = MemoryService(MarkdownMemoryStore(os.path.join(self.dir.name, "md")))
+        md.clock = self.mem.clock = lambda: "2026-01-01T00:00:00Z"
+        for svc in (self.mem, md):
+            for title in ["foo bar", "foo", "a b", "a", "Z", "x y z"]:
+                svc.remember(H, title=title, body="  padded body \n", kind="note",
+                             scope="project", project_id=P, user_id=U)
+            svc.feedback(H, svc.list_memories()[0].id, True)
+        self.assertEqual(list(self.mem.store.load()), list(md.store.load()))
+        self.assertEqual([m.dump() for m in self.mem.list_memories()],
+                         [m.dump() for m in md.list_memories()])
+        for limit in (0, 1, 3, 100):
+            self.assertEqual([e["event"] for e in self.mem.log(limit)],
+                             [e["event"] for e in md.log(limit)])
+
+
+class SqliteReflectTest(Sqlite, ReflectTest):
+    pass
+
+
+class SqliteTaskGraphSyncTest(Sqlite, TaskGraphSyncTest):
+    pass
+
+
+class SqliteMcpTest(Sqlite, McpTest):
+    pass
+
+
+class SqliteApiTest(Sqlite, ApiTest):
+    pass
 
 
 if __name__ == "__main__":

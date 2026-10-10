@@ -1,17 +1,14 @@
 """Seed memory with the "Chunking evaluation" demo (same content as the
 frontend fixtures, plus the preferences Lorenz states in the task comments).
 
-Run:  python -m memory.seed        (env MEMORY_PATH, default data/memory)
+Run:  python -m memory.seed        (storage: see storage.py)
 """
 
 from __future__ import annotations
 
-import os
-
 from taskgraph.models import Actor
 
 from .service import MemoryService
-from .store import MarkdownMemoryStore
 
 PROJECT = "chunking-evaluation"
 OWNER = "lorenz"
@@ -59,7 +56,9 @@ SEED = [
 
 
 def main() -> None:
-    service = MemoryService(MarkdownMemoryStore(os.environ.get("MEMORY_PATH", "data/memory")))
+    from storage import open_memory_store
+
+    service = MemoryService(open_memory_store())
     for actor, fields in SEED:
         m = service.remember(actor, project_id=PROJECT, user_id=OWNER, **fields)
         print(m.path)

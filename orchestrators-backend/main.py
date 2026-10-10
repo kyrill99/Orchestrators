@@ -16,14 +16,16 @@ from services.gradium import create_browser_token
 
 from changelog import build_router as build_changelog_router
 from db import Database
-from identity import build_router as build_identity_router
-from memory import MarkdownMemoryStore, MemoryService
+from memory import MemoryService
 from memory.api import build_router as build_memory_router
 from memory.distill import GeminiDistiller
 from selfupdate import build_router as build_selfupdate_router
+from storage import open_memory_store, open_taskgraph_store
 from sysstats import build_router as build_sysstats_router
-from taskgraph import JsonlEventStore, TaskGraphService
+from taskgraph import TaskGraphService
 from taskgraph.api import build_router
+from userstate import UserStateStore
+from userstate import build_router as build_userstate_router
 
 load_dotenv()
 
@@ -41,14 +43,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Shared local SQLite database (data/orchestrators.db); see db.py.
+# Task graph and memory backends are chosen in storage.py.
+db = Database()
 
-taskgraph = TaskGraphService(
-    JsonlEventStore(os.environ.get("TASKGRAPH_PATH", "data/taskgraph.jsonl"))
-)
+taskgraph = TaskGraphService(open_taskgraph_store(db))
 app.include_router(build_router(taskgraph))
 
 memory = MemoryService(
-    MarkdownMemoryStore(os.environ.get("MEMORY_PATH", "data/memory")),
+    open_memory_store(db),
     GeminiDistiller(MODEL) if os.environ.get("GEMINI_API_KEY") else None,
 )
 app.include_router(build_memory_router(memory, taskgraph))
@@ -60,10 +63,8 @@ configure_tools(AgentTools(memory, taskgraph))
 app.include_router(build_selfupdate_router("data"))
 app.include_router(build_changelog_router("data"))
 app.include_router(build_sysstats_router())
-app.include_router(build_identity_router())
-
-# Shared local SQLite database (data/orchestrators.db); see db.py.
-db = Database()
+# GET /api/me plus per-user state; replaces identity.build_router().
+app.include_router(build_userstate_router(UserStateStore(db)))
 
 
 class ChatRequest(BaseModel):

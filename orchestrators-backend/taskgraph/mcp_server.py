@@ -1,7 +1,7 @@
 """MCP server exposing the task graph to the planner agent.
 
 Run:  python -m taskgraph.mcp_server            (stdio, for Claude Code etc.)
-Env:  TASKGRAPH_PATH      event log (default: data/taskgraph.jsonl)
+Env:  TASKGRAPH_STORE, TASKGRAPH_PATH, DATABASE_PATH  storage, see storage.py
       TASKGRAPH_AGENT_ID  agent id recorded on changes (default: planner)
       TASKGRAPH_RUNNER, TASKGRAPH_RUNNER_CMD, TASKGRAPH_RUN_LOGS  see runs.py
       MEMORY_PATH, MEMORY_PROJECT_ID, MEMORY_USER_ID  see memory/mcp_server.py
@@ -270,8 +270,8 @@ def build_server(
 
 
 def main() -> None:
-    path = os.environ.get("TASKGRAPH_PATH", "data/taskgraph.jsonl")
-    service = TaskGraphService(JsonlEventStore(path))
+    from storage import open_taskgraph_store  # TASKGRAPH_STORE, see storage.py
+    service = TaskGraphService(open_taskgraph_store())
     agent_id = os.environ.get("TASKGRAPH_AGENT_ID", "planner")
     runs = RunManager(service, runner_from_env())
     build_server(service, agent_id, memory_mcp.service_from_env(), runs).run("stdio")
