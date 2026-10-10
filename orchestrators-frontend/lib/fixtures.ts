@@ -52,6 +52,11 @@ export type MemoryFile = {
   name: string;
   path: string;
   content: string;
+  /** Set when the file comes from the backend (`GET /api/memory/tree`). */
+  scope?: "project" | "user" | "global";
+  kind?: string;
+  confidence?: number;
+  uses?: number;
 };
 
 export type MemoryFolder = {

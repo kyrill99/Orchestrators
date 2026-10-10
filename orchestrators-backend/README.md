@@ -29,6 +29,8 @@ See [`.env.example`](.env.example). Required / expected keys:
 | --- | --- |
 | `GEMINI_API_KEY` | Google Gemini API access |
 | `GRADIUM_API_KEY` | Gradium API access |
+| `MEMORY_PATH` | Memory directory (optional, default `data/memory`) |
+| `CORS_ORIGINS` | Origins allowed to call the API (optional, default `http://localhost:3000`) |
 
 Never commit `.env`.
 
@@ -49,6 +51,9 @@ API docs (when the FastAPI app is running): [http://localhost:8000/docs](http://
 ```
 orchestrators-backend/
   main.py            # FastAPI app entry (and temporary Gemini smoke script)
+  taskgraph/         # task graph: service, REST, MCP (see taskgraph/API.md)
+  memory/            # memory across sessions: service, REST, MCP (see memory/API.md)
+  tests/
   requirements.txt
   .env.example
   README.md

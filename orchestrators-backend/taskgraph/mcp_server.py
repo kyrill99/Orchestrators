@@ -3,6 +3,7 @@
 Run:  python -m taskgraph.mcp_server            (stdio, for Claude Code etc.)
 Env:  TASKGRAPH_PATH      event log (default: data/taskgraph.jsonl)
       TASKGRAPH_AGENT_ID  agent id recorded on changes (default: planner)
+      MEMORY_PATH, MEMORY_PROJECT_ID, MEMORY_USER_ID  see memory/mcp_server.py
 """
 
 from __future__ import annotations
@@ -12,6 +13,9 @@ from typing import Any, Literal
 
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+
+from memory import mcp_server as memory_mcp
+from memory.service import MemoryService
 
 from .models import (
     Actor,
@@ -40,8 +44,16 @@ Ask the human about strategy (goals, priorities, success criteria) with
 request_decision, never about implementation A-vs-B choices you can decide."""
 
 
-def build_server(service: TaskGraphService, agent_id: str = "planner") -> MCPServer:
-    server = MCPServer("orchestrators-taskgraph", instructions=INSTRUCTIONS)
+def build_server(
+    service: TaskGraphService, agent_id: str = "planner", memory: MemoryService | None = None
+) -> MCPServer:
+    """With `memory`, the planner also gets the memory tools on this server."""
+    instructions = INSTRUCTIONS
+    if memory is not None:
+        instructions += "\n\n" + memory_mcp.INSTRUCTIONS
+    server = MCPServer("orchestrators-taskgraph", instructions=instructions)
+    if memory is not None:
+        memory_mcp.register_tools(server, memory, agent_id)
     me = Actor(type="agent", id=agent_id)
 
     def run(fn, *args, **kwargs) -> Any:
@@ -168,7 +180,8 @@ def build_server(service: TaskGraphService, agent_id: str = "planner") -> MCPSer
 def main() -> None:
     path = os.environ.get("TASKGRAPH_PATH", "data/taskgraph.jsonl")
     service = TaskGraphService(JsonlEventStore(path))
-    build_server(service, os.environ.get("TASKGRAPH_AGENT_ID", "planner")).run("stdio")
+    agent_id = os.environ.get("TASKGRAPH_AGENT_ID", "planner")
+    build_server(service, agent_id, memory_mcp.service_from_env()).run("stdio")
 
 
 if __name__ == "__main__":

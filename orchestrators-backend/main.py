@@ -2,8 +2,12 @@ import os
 
 from dotenv import load_dotenv
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from google import genai
 
+from memory import MarkdownMemoryStore, MemoryService
+from memory.api import build_router as build_memory_router
+from memory.distill import GeminiDistiller
 from taskgraph import JsonlEventStore, TaskGraphService
 from taskgraph.api import build_router
 
@@ -16,12 +20,24 @@ app = FastAPI(
     description="Backend for agentic project orchestration",
     version="0.1.0",
 )
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=os.environ.get("CORS_ORIGINS", "http://localhost:3000").split(","),
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 taskgraph = TaskGraphService(
     JsonlEventStore(os.environ.get("TASKGRAPH_PATH", "data/taskgraph.jsonl"))
 )
 app.include_router(build_router(taskgraph))
+
+memory = MemoryService(
+    MarkdownMemoryStore(os.environ.get("MEMORY_PATH", "data/memory")),
+    GeminiDistiller(MODEL) if os.environ.get("GEMINI_API_KEY") else None,
+)
+app.include_router(build_memory_router(memory, taskgraph))
 
 
 @app.get("/health")
