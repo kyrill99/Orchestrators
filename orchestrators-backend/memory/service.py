@@ -17,6 +17,7 @@ The loop that makes it better over time:
 
 from __future__ import annotations
 
+import hashlib
 import re
 from collections.abc import Callable, Sequence
 from typing import Any, Protocol
@@ -72,6 +73,20 @@ class Distiller(Protocol):
     def distill(
         self, messages: Sequence[ChatMessage], existing: Sequence[Memory]
     ) -> list[ReflectOp]: ...
+
+
+def _title_slug(title: str) -> str:
+    """File name for a title. Long titles keep a hash of the whole title, so
+    two titles that start the same never share a file."""
+    s = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-") or "memory"
+    if len(s) <= 60:
+        return s
+    return f"{s[:60].strip('-')}-{hashlib.sha1(s.encode()).hexdigest()[:6]}"
+
+
+def user_key(identity: str) -> str:
+    """Memory user id for a signed-in user (ids cannot contain '@' or '.')."""
+    return _title_slug(identity)
 
 
 def _tokens(text: str) -> set[str]:
@@ -442,14 +457,22 @@ class MemoryService:
             owner, prefix = "global", "global"
         if not re.match(ID_PART, owner):
             raise MemoryServiceError("invalid", f"'{owner}' may only contain letters, digits, _ and -")
-        memory_id = f"{prefix}.{kind}.{slug or _slug(title)}"
+        memory_id = f"{prefix}.{kind}.{slug or _title_slug(title)}"
 
         existing = memories.get(memory_id)
+        if existing is None and slug is None:
+            # Memories stored before long titles got a hash have the short id.
+            legacy = memories.get(f"{prefix}.{kind}.{_slug(title)}")
+            if legacy is not None and legacy.title == title:
+                existing = legacy
         if existing is not None:
+            # Keep what was overwritten, so a changed mind stays traceable.
+            changed = existing.body.strip() != body.strip()
+            previous = {"previousBody": existing.body} if changed else {}
             existing.title, existing.body = title, body
             existing.tags = list(dict.fromkeys([*existing.tags, *tags]))
             existing.status, existing.superseded_by = "active", None
-            return self._save(existing, actor, "updated")
+            return self._save(existing, actor, "updated", **previous)
 
         m = Memory(
             id=memory_id, scope=scope, project_id=project_id, user_id=user_id, kind=kind,

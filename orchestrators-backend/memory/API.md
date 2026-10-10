@@ -22,7 +22,9 @@ edited by hand. `log.jsonl` records every create / update / use / feedback.
   confidence (0–1), uses, helpful, unhelpful, status (active|superseded|archived),
   supersededBy, createdBy, createdAt, updatedAt`
 - The id is the file path with dots: `projects.chunking-evaluation.strategy.success-criteria`.
-- Storing a memory with the same scope, kind and title updates it.
+- Storing a memory with the same scope, kind and title updates it; the replaced text is
+  kept in the log as `previousBody`. Titles over 60 characters get a hash in the file
+  name, so two long titles that start the same stay separate.
 
 ## The loop
 
@@ -63,6 +65,16 @@ Errors: `{code, message}` with 404 not_found, 503 unavailable, 422 invalid.
 They are registered on the task graph server (`python -m taskgraph.mcp_server`), so the
 planner needs one connection. The project and owner come from `MEMORY_PROJECT_ID` and
 `MEMORY_USER_ID` (default `default`). `python -m memory.mcp_server` runs them alone.
+
+## Interview agent (`POST /api/agent/chat`)
+
+The chat has the same tools in-process (`services/agent_tools.py`). Two things happen
+without the model having to choose them:
+
+- The owner is the signed-in user (`identity.current_user`): `anna@example.com` reads and
+  writes `users/anna-example-com/`. Setting `MEMORY_USER_ID` overrides this for everyone.
+- The first message of a conversation is sent with `context()` in front of it, so a new
+  chat starts from what earlier sessions stored.
 
 ```bash
 cd orchestrators-backend

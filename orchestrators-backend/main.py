@@ -4,7 +4,7 @@ import os
 from typing import Literal
 
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from google import genai
 from pydantic import BaseModel, Field
@@ -16,6 +16,7 @@ from services.gradium import create_browser_token
 
 from changelog import build_router as build_changelog_router
 from db import Database
+from identity import current_user
 from memory import MemoryService
 from memory.api import build_router as build_memory_router
 from memory.distill import GeminiDistiller
@@ -90,12 +91,13 @@ async def voice_token():
 
 
 @app.post("/api/agent/chat", response_model=ChatResponse)
-def agent_chat_endpoint(body: ChatRequest):
+def agent_chat_endpoint(body: ChatRequest, request: Request):
     """Strategy agent reply (Gemini). Pair with Gradium TTS on the client for voice."""
     return agent_chat(
         body.message,
         previous_interaction_id=body.previous_interaction_id,
         mode=body.mode,
+        user=current_user(request).email,
     )
 
 

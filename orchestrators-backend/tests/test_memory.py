@@ -60,6 +60,33 @@ class CoreTest(MemoryTestCase):
         self.assertEqual(len(self.mem.list_memories()), 1)
         self.assertEqual((second.body, second.tags), ("new", ["a", "b"]))
 
+    def test_long_titles_do_not_overwrite_each_other(self):
+        prefix = "Owner preference about how agents should report on "
+        a = self.remember(prefix + "progress", "short updates", "preference", "user")
+        b = self.remember(prefix + "blockers", "tell me at once", "preference", "user")
+        self.assertNotEqual(a.id, b.id)
+        self.assertEqual(self.mem.get(a.id).body, "short updates")
+        again = self.remember(prefix + "progress", "three lines", "preference", "user")
+        self.assertEqual(again.id, a.id)
+        self.assertEqual(len(self.mem.list_memories()), 2)
+
+    def test_same_title_finds_memory_with_old_short_id(self):
+        from memory.models import Memory
+
+        title = "Success criteria and trade-offs: coherence first, then latency"
+        old = Memory(id="projects.chunking.strategy.success-criteria-and-trade-offs-coherenc",
+                     scope="project", project_id=P, kind="strategy", title=title, body="old")
+        self.mem.store.write(old)
+        m = self.remember(title, "new", "strategy")
+        self.assertEqual(m.id, old.id)
+        self.assertEqual(len(self.mem.list_memories()), 1)
+
+    def test_overwritten_text_is_kept_in_log(self):
+        self.remember("Priorities", "coherence first", "strategy")
+        self.remember("Priorities", "latency first", "strategy")
+        last = self.mem.log()[-1]
+        self.assertEqual((last["event"], last["previousBody"]), ("updated", "coherence first"))
+
     def test_scopes_are_isolated(self):
         self.remember("Project goal", kind="strategy")
         self.remember("Owner pref", kind="preference", scope="user")

@@ -79,6 +79,13 @@ links. Say numbers the way you would speak them. End with one question unless yo
 wrapping up.""",
 }
 
+# Put in front of the owner's first message of a conversation, with memory's context.
+MEMORY_NOTE = (
+    "From earlier sessions with this owner. Treat it as known: build on it and do not "
+    "ask for it again. If the owner now contradicts an entry, call remember with the "
+    "same title and scope to correct it."
+)
+
 _tools: AgentTools | None = None
 
 
@@ -155,19 +162,30 @@ def chat(
     *,
     previous_interaction_id: str | None = None,
     mode: Mode = "text",
+    user: str | None = None,
 ) -> dict[str, Any]:
-    """Send a user message and return the agent reply + interaction id."""
+    """Send a user message and return the agent reply + interaction id.
+
+    `user` is the signed-in owner; their memory is read and written. A new
+    conversation starts with what memory already knows, so the agent does not
+    depend on choosing to look it up.
+    """
     text = message.strip()
     if not text:
         raise HTTPException(status_code=400, detail="message is required")
 
     client = _client()
-    tools = _tools.declarations() if _tools is not None else None
+    agent_tools = _tools.for_user(user) if _tools is not None and user else _tools
+    tools = agent_tools.declarations() if agent_tools is not None else None
     kwargs: dict[str, Any] = {
         "model": MODEL,
         "input": text,
         "system_instruction": instructions(mode),
     }
+    if agent_tools is not None and not previous_interaction_id:
+        known = agent_tools.memory_context()
+        if known:
+            kwargs["input"] = f"[{MEMORY_NOTE}\n\n{known}]\n\n{text}"
     if tools:
         kwargs["tools"] = tools
     if mode == "voice":
@@ -185,7 +203,7 @@ def chat(
         ) from exc
 
     rounds = 0
-    while _tools is not None and tools and rounds < MAX_TOOL_ROUNDS:
+    while agent_tools is not None and tools and rounds < MAX_TOOL_ROUNDS:
         calls = _function_calls(interaction)
         if not calls:
             break
@@ -193,7 +211,7 @@ def chat(
         results: list[dict[str, Any]] = []
         for step in calls:
             name = getattr(step, "name", None) or ""
-            payload = _tools.dispatch(name, _call_args(step))
+            payload = agent_tools.dispatch(name, _call_args(step))
             results.append(
                 {
                     "type": "function_result",

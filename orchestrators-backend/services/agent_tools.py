@@ -6,6 +6,7 @@ but called directly from FastAPI against the shared service instances — no std
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 from typing import Any
@@ -13,7 +14,7 @@ from typing import Any
 from pydantic import TypeAdapter, ValidationError
 
 from memory.models import MemorySource
-from memory.service import DEFAULT_ID, MemoryService, MemoryServiceError
+from memory.service import DEFAULT_ID, MemoryService, MemoryServiceError, user_key
 from taskgraph.models import (
     Actor,
     AddComment,
@@ -374,6 +375,20 @@ class AgentTools:
         self.project_id = project_id or os.environ.get("MEMORY_PROJECT_ID", DEFAULT_ID)
         self.user_id = user_id or os.environ.get("MEMORY_USER_ID", DEFAULT_ID)
         self.me = Actor(type="agent", id=self.agent_id)
+
+    def for_user(self, identity: str) -> AgentTools:
+        """The same tools with memory bound to a signed-in user, so one owner's
+        preferences are not stored under, or read by, another. An explicit
+        MEMORY_USER_ID keeps its binding."""
+        if os.environ.get("MEMORY_USER_ID"):
+            return self
+        bound = copy.copy(self)
+        bound.user_id = user_key(identity)
+        return bound
+
+    def memory_context(self) -> str:
+        """What memory knows for this project and owner, as a prompt block."""
+        return self.memory.context(project_id=self.project_id, user_id=self.user_id)["text"]
 
     def declarations(self) -> list[dict[str, Any]]:
         return list(TOOL_DECLARATIONS)
