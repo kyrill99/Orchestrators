@@ -51,7 +51,7 @@ export function ProjectList() {
   if (projects === null) return null;
 
   return (
-    <div className="mt-5 flex min-h-0 flex-col">
+    <div className="mb-4 flex min-h-0 flex-col">
       <div className="mb-1 flex items-center px-2">
         <span className="text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
           Projects

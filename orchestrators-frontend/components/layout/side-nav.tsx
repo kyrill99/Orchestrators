@@ -41,6 +41,8 @@ export function SideNav() {
         />
       </Link>
 
+      <ProjectList />
+
       <nav className="flex flex-col gap-0.5">
         {items.map(({ href, label, icon: Icon }) => {
           const active =
@@ -66,7 +68,6 @@ export function SideNav() {
         })}
       </nav>
 
-      <ProjectList />
 
       <div className="mt-auto flex flex-col gap-3">
         <MiniGraph />
