@@ -349,35 +349,6 @@ export const chatMessages: ChatMessage[] = [
   },
 ];
 
-export type AgentExample = {
-  id: string;
-  title: string;
-  description: string;
-  prompt: string;
-};
-
-/** Strategy-interview starters for the Agent welcome screen. */
-export const agentExamples: AgentExample[] = [
-  {
-    id: "ex-objective",
-    title: "Define the objective",
-    description: "Capture the end goal in one sentence — not how to build it",
-    prompt: "Help me state the project objective in one sentence.",
-  },
-  {
-    id: "ex-success",
-    title: "Clarify success criteria",
-    description: "What “done” means for this project type",
-    prompt: "What should success look like for this project?",
-  },
-  {
-    id: "ex-priorities",
-    title: "Set priorities",
-    description: "Goals and tradeoffs agents should optimize for",
-    prompt: "What are the top priorities and non-goals for this work?",
-  },
-];
-
 export type RecentChat = {
   id: string;
   title: string;

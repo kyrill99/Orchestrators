@@ -4,21 +4,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ArrowUp,
   AudioLines,
-  Box,
   ChevronDown,
-  ClipboardList,
   Loader2,
   Paperclip,
-  Search,
-  Target,
 } from "lucide-react";
-import {
-  agentExamples,
-  chatMessages as seedMessages,
-  recentChats,
-  type AgentExample,
-  type ChatMessage,
-} from "@/lib/fixtures";
+import { recentChats, type ChatMessage } from "@/lib/fixtures";
 import { sendAgentMessage, type AgentMode } from "@/lib/api";
 import {
   VOICE_OPENERS,
@@ -30,15 +20,9 @@ import { cn } from "@/lib/utils";
 
 type Mode = "welcome" | "interview" | "voice";
 
-const exampleIcons = {
-  "ex-objective": Target,
-  "ex-success": ClipboardList,
-  "ex-priorities": Search,
-} as const;
-
 export function AgentPage() {
   const [mode, setMode] = useState<Mode>("welcome");
-  const [messages, setMessages] = useState<ChatMessage[]>(seedMessages);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -129,7 +113,7 @@ export function AgentPage() {
     voiceRef.current = null;
     setVoice(null);
     interactionIdRef.current = null;
-    setMessages(seedMessages);
+    setMessages([]);
     setDraft("");
     setError(null);
     setMode("welcome");
@@ -148,11 +132,26 @@ export function AgentPage() {
         </button>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-auto">
-        <div className="mx-auto flex min-h-full max-w-2xl flex-col px-6 pb-10 pt-6 sm:pt-16">
-          {mode === "voice" && voice ? (
+      {mode === "voice" && voice ? (
+        <div className="min-h-0 flex-1 overflow-auto">
+          <div className="mx-auto max-w-2xl px-6 pb-10 pt-6 sm:pt-16">
             <VoiceMode conversation={voice} onEnd={endVoice} />
-          ) : mode === "welcome" ? (
+          </div>
+        </div>
+      ) : mode === "interview" ? (
+        <Interview
+          messages={messages}
+          draft={draft}
+          setDraft={setDraft}
+          busy={busy}
+          error={error}
+          onVoice={startVoice}
+          onSend={() => void submitMessage(draft)}
+          onNewChat={resetChat}
+        />
+      ) : (
+        <div className="min-h-0 flex-1 overflow-auto">
+          <div className="mx-auto flex min-h-full max-w-2xl flex-col px-6 pb-10 pt-6 sm:pt-16">
             <Welcome
               draft={draft}
               setDraft={setDraft}
@@ -160,29 +159,22 @@ export function AgentPage() {
               error={error}
               onVoice={startVoice}
               onSend={() => void submitMessage(draft)}
-              onFocus={() => setMode("interview")}
-              onExample={(example) => {
-                setMode("interview");
-                void submitMessage(example.description);
-              }}
               onRecent={() => setMode("interview")}
             />
-          ) : (
-            <Interview
-              messages={messages}
-              draft={draft}
-              setDraft={setDraft}
-              busy={busy}
-              error={error}
-              onVoice={startVoice}
-              onSend={() => void submitMessage(draft)}
-              onNewChat={resetChat}
-            />
-          )}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
+}
+
+function timeOfDayGreeting(date = new Date()): string {
+  const hour = date.getHours();
+  if (hour < 5) return "Good night";
+  if (hour < 12) return "Good morning";
+  if (hour < 17) return "Good afternoon";
+  if (hour < 21) return "Good evening";
+  return "Good night";
 }
 
 function Welcome({
@@ -192,8 +184,6 @@ function Welcome({
   error,
   onVoice,
   onSend,
-  onFocus,
-  onExample,
   onRecent,
 }: {
   draft: string;
@@ -202,20 +192,23 @@ function Welcome({
   error: string | null;
   onVoice: () => void;
   onSend: () => void;
-  onFocus: () => void;
-  onExample: (example: AgentExample) => void;
   onRecent: () => void;
 }) {
+  const [greeting, setGreeting] = useState("Good morning");
+
+  useEffect(() => {
+    const update = () => setGreeting(timeOfDayGreeting());
+    update();
+    const id = window.setInterval(update, 60_000);
+    return () => window.clearInterval(id);
+  }, []);
+
   return (
     <>
       <div className="mb-10 text-center">
         <h1 className="text-xl font-semibold tracking-[-0.02em] text-foreground">
-          Start with strategy
+          {greeting}, Lorenz
         </h1>
-        <p className="mt-2 text-[13px] text-muted-foreground">
-          I’ll interview you about goals, priorities, and success — never
-          implementation details. Type, or switch to voice and talk it through.
-        </p>
       </div>
 
       <Composer
@@ -225,39 +218,7 @@ function Welcome({
         error={error}
         onVoice={onVoice}
         onSend={onSend}
-        onFocus={onFocus}
       />
-
-      <section className="mt-10">
-        <h2 className="mb-3 text-[13px] font-medium text-muted-foreground">
-          Get started with some examples
-        </h2>
-        <div className="grid gap-2 sm:grid-cols-3">
-          {agentExamples.map((example) => {
-            const Icon =
-              exampleIcons[example.id as keyof typeof exampleIcons] ?? Box;
-            return (
-              <button
-                key={example.id}
-                type="button"
-                onClick={() => onExample(example)}
-                className="rounded-xl border border-border bg-background p-3.5 text-left transition-colors hover:bg-accent/60"
-              >
-                <Icon
-                  className="mb-3 size-4 text-muted-foreground"
-                  strokeWidth={1.75}
-                />
-                <p className="text-[13px] font-medium text-foreground">
-                  {example.title}
-                </p>
-                <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                  {example.description}
-                </p>
-              </button>
-            );
-          })}
-        </div>
-      </section>
 
       <section className="mt-10">
         <h2 className="mb-2 text-[13px] font-medium text-muted-foreground">
@@ -303,9 +264,15 @@ function Interview({
   onSend: () => void;
   onNewChat: () => void;
 }) {
+  const bottomRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [messages, busy]);
+
   return (
-    <>
-      <div className="mb-6 flex items-center justify-between">
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="mx-auto flex w-full max-w-2xl shrink-0 items-center justify-between px-6 pt-4 pb-2">
         <p className="text-[13px] font-medium text-foreground">
           Objective interview
         </p>
@@ -318,37 +285,44 @@ function Interview({
         </button>
       </div>
 
-      <div className="mb-8 flex flex-col gap-3">
-        {messages.map((message) => (
-          <div
-            key={message.id}
-            className={cn(
-              "max-w-[92%] rounded-2xl px-3.5 py-2.5 text-[13px] leading-relaxed",
-              message.role === "agent"
-                ? "self-start bg-accent text-foreground"
-                : "self-end bg-foreground text-background",
-            )}
-          >
-            {message.content}
-          </div>
-        ))}
-        {busy && (
-          <div className="inline-flex items-center gap-2 self-start rounded-2xl bg-accent px-3.5 py-2.5 text-[13px] text-muted-foreground">
-            <Loader2 className="size-3.5 animate-spin" />
-            Thinking…
-          </div>
-        )}
+      <div className="min-h-0 flex-1 overflow-auto">
+        <div className="mx-auto flex max-w-2xl flex-col gap-3 px-6 py-4">
+          {messages.map((message) => (
+            <div
+              key={message.id}
+              className={cn(
+                "max-w-[92%] text-[13px] leading-relaxed text-foreground",
+                message.role === "agent"
+                  ? "self-start py-1"
+                  : "self-end rounded-2xl bg-accent px-3.5 py-2.5",
+              )}
+            >
+              {message.content}
+            </div>
+          ))}
+          {busy && (
+            <div className="inline-flex items-center gap-2 self-start py-1 text-[13px] text-muted-foreground">
+              <Loader2 className="size-3.5 animate-spin" />
+              Thinking…
+            </div>
+          )}
+          <div ref={bottomRef} />
+        </div>
       </div>
 
-      <Composer
-        draft={draft}
-        setDraft={setDraft}
-        busy={busy}
-        error={error}
-        onVoice={onVoice}
-        onSend={onSend}
-      />
-    </>
+      <div className="shrink-0 bg-background px-6 pt-3 pb-4">
+        <div className="mx-auto max-w-2xl">
+          <Composer
+            draft={draft}
+            setDraft={setDraft}
+            busy={busy}
+            error={error}
+            onVoice={onVoice}
+            onSend={onSend}
+          />
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -359,7 +333,6 @@ function Composer({
   error,
   onVoice,
   onSend,
-  onFocus,
 }: {
   draft: string;
   setDraft: (value: string) => void;
@@ -367,7 +340,6 @@ function Composer({
   error: string | null;
   onVoice: () => void;
   onSend: () => void;
-  onFocus?: () => void;
 }) {
   const canSend = draft.trim().length > 0 && !busy;
 
@@ -377,7 +349,6 @@ function Composer({
         <textarea
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
-          onFocus={onFocus}
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey) {
               event.preventDefault();
